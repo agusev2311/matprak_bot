@@ -1,4 +1,5 @@
 import telebot
+from telebot import types
 import time
 
 config = dict([])
@@ -24,5 +25,24 @@ def register_name(message):
     else:
         register[message.from_user.id] = name
         bot.reply_to(message, f"Мы отправили сообщение администратору. Теперь ожидайте подтверждения от него.")
+        markup = types.InlineKeyboardMarkup()
+        button1 = types.InlineKeyboardButton("✅ Принять", callback_data=f'reg_approve_{message.from_user.id}_{name[0]}_{name[1]}')
+        button2 = types.InlineKeyboardButton("🟡 Отклонить", callback_data=f'reg_deny_{message.from_user.id}')
+        button3 = types.InlineKeyboardButton("❌ Забанить", callback_data=f'reg_ban_{message.from_user.id}')
+        markup.add(button1)
+        markup.add(button2, button3)
+        bot.send_message(int(config["admin_id"]), f"{message.from_user.username} регестрируется как {name[0]} {name[1]}", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: True)
+def handle_query(call):
+    if (call.data[:4] == "reg_"):
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+        if (call.data[:12] == "reg_approve_"):
+            print("reg_approve_")
+        elif (call.data[:9] == "reg_deny_"):
+            print("reg_deny_")
+        elif (call.data[:12] == "reg_"):
+            print("reg_")
+    # bot.send_message(call.message.from_user.id, call.data[:3])
 
 bot.polling(none_stop=True)
