@@ -43,11 +43,18 @@ def start(message):
     if user and user[3] == "pending":
         bot.reply_to(message, "Вы уже подали заявку, ожидайте ответа администратора.")
     elif user and user[3] == "approved":
-        bot.reply_to(message, "Вы зарегестрированы!")
+        markup = types.InlineKeyboardMarkup()
+        button1 = types.InlineKeyboardButton("✏️ Отправить решение", callback_data=f'mm_send')
+        button2 = types.InlineKeyboardButton("🔍 Принять решение", callback_data=f'mm_check')
+        button3 = types.InlineKeyboardButton("📃 Все курсы", callback_data=f'mm_courses')
+        markup.add(button1)
+        markup.add(button2)
+        markup.add(button3)
+        bot.reply_to(message, f"""Здравствуйте, {message.from_user.first_name}!""", reply_markup=markup)
     elif user and user[3] == "banned":
         bot.reply_to(message, "Вы были забанены. Обратитесь к администратору")
     else:
-        bot.reply_to(message, f"Здравcтвуйте! Сейчас вы будете проходить регистрацию. Пожалуйста введите своё <b>имя</b> и <b>фамилию</b> (<u>обязательно в таком порядке</u>)", parse_mode="HTML")
+        bot.reply_to(message, f"""Здравcтвуйте! Сейчас вы будете проходить регистрацию. Пожалуйста введите своё <b>имя</b> и <b>фамилию</b> (<u>обязательно в таком порядке</u>)\n\nПример: "Артём Гусев".""", parse_mode="HTML")
         bot.register_next_step_handler(message, register_name)
 
 # Регистрация пользователя
