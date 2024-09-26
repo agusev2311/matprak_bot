@@ -86,16 +86,23 @@ def handle_query(call):
         cursor.execute("UPDATE users SET status='approved' WHERE user_id=?", (user_id,))
         conn.commit()
         bot.send_message(user_id, "Ваша регистрация была одобрена! Введите /start")
+        bot.delete_message(call.message.chat.id, call.message.message_id)
     elif call.data.startswith("reg_deny_"):
         cursor.execute("DELETE FROM users WHERE user_id=?", (user_id,))
         conn.commit()
         bot.send_message(user_id, "Ваша заявка была отклонена. Вы можете подать её снова.")
+        bot.delete_message(call.message.chat.id, call.message.message_id)
     elif call.data.startswith("reg_ban_"):
         cursor.execute("UPDATE users SET status='banned' WHERE user_id=?", (user_id,))
         conn.commit()
         bot.send_message(user_id, "Вы были забанены и не можете подать заявку снова. Рекомендую обратиться к администратору")
-
-    bot.delete_message(call.message.chat.id, call.message.message_id)
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    elif call.data.startswith("mm_send"):
+        pass
+    elif call.data.startswith("mm_check"):
+        pass
+    elif call.data.startswith("mm_courses"):
+        pass
 
 cre_courses = dict([])
 
