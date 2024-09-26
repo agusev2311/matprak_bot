@@ -23,7 +23,7 @@ print(config)
 
 bot = telebot.TeleBot(config["tg-token"])
 
-@bot.message_handler(commands=['start'])
+@bot.message_handler(commands=["start"])
 def start(message):
     cursor.execute("SELECT * FROM users WHERE user_id=?", (message.from_user.id,))
     user = cursor.fetchone()
@@ -45,7 +45,7 @@ def register_name(message):
         bot.register_next_step_handler(message, register_name)
     else:
         cursor.execute("INSERT INTO users (user_id, first_name, last_name, status) VALUES (?, ?, ?, ?)",
-                       (message.from_user.id, name[0], name[1], 'pending'))
+                       (int(message.from_user.id), name[0], name[1], 'pending'))
         conn.commit()
 
         bot.reply_to(message, "Мы отправили сообщение администратору. Теперь ожидайте подтверждения.")
@@ -75,5 +75,65 @@ def handle_query(call):
         bot.send_message(user_id, "Вы были забанены и не можете подать заявку снова. Рекомендую обратиться к администратору")
 
     bot.delete_message(call.message.chat.id, call.message.message_id)
+
+cre_courses = dict([])
+
+@bot.message_handler(commands=["create_course"])
+def create_course(message):
+    bot.reply_to(message, f"""Вы начали создание курса. Чтобы его отменить напишите на любом этапе "stop".
+Для начала введите имена всех людей, которых вы хотите добавить в разработчиков курса.
+Для этого нужно ввести их id. Чтобы найти id человека перешлите боту @userinfobot любое сообщение этого человека.
+Указывайте id через пробел (пример: "1234567 7654321 9876")
+Если вы не хотите никого указывать отправьте "none"
+Если вы успешно создадите курс, то он навсегда останется в базе данных бота, даже если вы его удалите.""")
+    bot.register_next_step_handler(message, create_course_users)
+
+def create_course_users(message):
+    if message.text == "stop":
+        bot.reply_to(message, f"Создание курса отменено")
+        return
+    elif message.text != "none":
+        users_id = message.text.split()
+        try:            
+            added = ""
+            for i in users_id:
+                int(i)
+
+            conn = sqlite3.connect("users.db", check_same_thread=False)
+            cursor = conn.cursor()
+            
+            for i in users_id:
+                cursor.execute('SELECT COUNT(*) FROM users WHERE user_id = ?', (int(i), ))
+                count = cursor.fetchone()[0]
+                # print(count)
+                if count == 0:
+                    added += f"{i} не зарегестрирован\n"
+                elif count == 1:
+                    cursor.execute('SELECT * FROM users WHERE user_id = ?', (int(i), ))
+                    user_info = cursor.fetchone()
+                    added += f"{user_info[1]} {user_info[2]} (id: {user_info[0]}, status: {user_info[3]})\n"
+                else:
+                    bot.send_message(config["1133611562"], f"❗️❗️❗️Человек под ID {i} присутствует в таблице пользователей несколько раз! Обратите на это внимание!")
+                    added += f"{i} несколько в таблице. Это не нормально. Мы уже отправили сообщение администратору."
+            
+            conn.close()
+            
+            # return count > 0
+            bot.reply_to(message, f"Вы добавили следующих людей: \n\n{added}\nЕсли вы добавили неправильных людей, напишите stop.")
+            bot.register_next_step_handler(message, create_course_name)
+            cre_courses[message.from_user.id] = [users_id]
+        except:
+            bot.reply_to(message, f"Вы неправавильно ввели id. Введите их сновы (вы всегда можете написать stop или none)")
+            bot.register_next_step_handler(message, create_course_users)
+    
+def create_course_name(message):
+    if message.text == "stop":
+        bot.reply_to(message, f"Создание курса отменено")
+        return
+
+    
+@bot.message_handler(commands=["support"])
+def create_course(message):
+    bot.reply_to(message, f"Поддержка находится в лс у @agusev2311")
 
 bot.polling(none_stop=True)
