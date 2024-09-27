@@ -5,8 +5,6 @@ import time
 
 conn = sqlite3.connect("users.db", check_same_thread=False)
 cursor = conn.cursor()
-
-# Создание таблицы для пользователей
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
@@ -16,12 +14,12 @@ cursor.execute('''
     )
 ''')
 
-# Создание таблицы для курсов
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS courses (
         course_id INTEGER PRIMARY KEY AUTOINCREMENT,
         course_name TEXT,
         creator_id INTEGER,
+        student_id TEXT,
         developers TEXT
     )
 ''')
@@ -46,7 +44,7 @@ def start(message):
         markup = types.InlineKeyboardMarkup()
         button1 = types.InlineKeyboardButton("✏️ Отправить решение", callback_data=f'mm_send')
         button2 = types.InlineKeyboardButton("🔍 Принять решение", callback_data=f'mm_check')
-        button3 = types.InlineKeyboardButton("📃 Все курсы", callback_data=f'mm_courses')
+        button3 = types.InlineKeyboardButton("📃 Все курсы", callback_data=f'mm_courses_0')
         markup.add(button1)
         markup.add(button2)
         markup.add(button3)
@@ -98,11 +96,94 @@ def handle_query(call):
         bot.send_message(user_id, "Вы были забанены и не можете подать заявку снова. Рекомендую обратиться к администратору")
         bot.delete_message(call.message.chat.id, call.message.message_id)
     elif call.data.startswith("mm_send"):
-        pass
+        mm_send(call)
     elif call.data.startswith("mm_check"):
-        pass
-    elif call.data.startswith("mm_courses"):
-        pass
+        mm_check(call)
+    elif call.data.startswith("mm_courses_"):
+        mm_courses(call, int(call.data.split('_')[-1]))
+    elif call.data.startswith("mm_main_menu"):
+        start(call.message)
+
+def mm_send(call):
+    pass
+
+def mm_check(call):
+    pass
+
+def mm_courses(call, page=0):
+    cursor.execute("SELECT * FROM users WHERE user_id=?", (call.from_user.id,))
+    user = cursor.fetchone()
+
+    if not user:
+        bot.send_message(call.message.chat.id, "Вы не зарегистрированы.")
+        return
+
+    is_admin = (user[3] == "approved" and str(call.from_user.id) == config["admin_id"])
+
+    # Извлекаем курсы
+    cursor.execute("SELECT * FROM courses")
+    all_courses = cursor.fetchall()
+
+    # Фильтрация курсов для не-админов
+    filtered_courses = []
+    for course in all_courses:
+        student_ids = course[3] if course[3] else ""  # Проверка на None
+        developer_ids = course[4] if course[4] else ""  # Проверка на None
+        
+        # Если пользователь студент или разработчик, добавляем курс
+        if str(call.from_user.id) in student_ids.split() or str(call.from_user.id) in developer_ids.split():
+            filtered_courses.append(course)
+
+    # Если админ, показываем все курсы
+    if is_admin:
+        filtered_courses = all_courses
+
+    # Пагинация
+    courses_per_page = 5
+    total_pages = (len(filtered_courses) + courses_per_page - 1) // courses_per_page
+    page_courses = filtered_courses[page * courses_per_page:(page + 1) * courses_per_page]
+
+    # Формирование текста с объяснением для каждого эмодзи
+    description = "Выберите курс:\n"
+    description += "👨‍🎓 — Вы студент курса\n"
+    description += "👨‍🏫 — Вы преподаватель курса\n"
+    
+    # Эмодзи для админов будет добавлено только если текущий пользователь админ
+    if is_admin:
+        description += "🔑 — Вы администратор курса\n"
+
+    # Формирование кнопок
+    markup = types.InlineKeyboardMarkup()
+    for course in page_courses:
+        student_ids = course[3] if course[3] else ""
+        developer_ids = course[4] if course[4] else ""
+
+        if str(call.from_user.id) in student_ids.split():
+            emoji = "👨‍🎓"  # Вы студент
+        elif str(call.from_user.id) in developer_ids.split():
+            emoji = "👨‍🏫"  # Вы преподаватель
+        elif is_admin:
+            emoji = "🔑"  # Админ видит все курсы
+        else:
+            emoji = "🚫"  # Не состоит в курсе
+
+        markup.add(types.InlineKeyboardButton(f"{emoji} {course[1]}", callback_data=f'course_{course[0]}'))
+
+    # Кнопки для навигации по страницам
+    navigation = []
+    if page > 0:
+        navigation.append(types.InlineKeyboardButton("⬅️ Назад", callback_data=f'mm_courses_{page - 1}'))
+    if page < total_pages - 1:
+        navigation.append(types.InlineKeyboardButton("➡️ Вперед", callback_data=f'mm_courses_{page + 1}'))
+
+    markup.row(*navigation)
+    markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
+
+    # Изменяем сообщение без проверки
+    bot.edit_message_text(f"{description}\nСтраница {page + 1} из {total_pages}:",
+                          chat_id=call.message.chat.id,
+                          message_id=call.message.message_id, 
+                          reply_markup=markup)
 
 cre_courses = dict([])
 
