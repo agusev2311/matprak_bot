@@ -15,6 +15,34 @@ cursor.execute('''
 ''')
 
 cursor.execute('''
+    CREATE TABLE IF NOT EXISTS lessons (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        course_id INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        status TEXT NOT NULL,
+        open_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(course_id) REFERENCES courses(id)
+    )
+''')
+
+# Status:
+# open
+# arc
+# dev
+           
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        lesson_id INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        status TEXT NOT NULL,
+        deadline TIMESTAMP,
+        description TEXT,
+        FOREIGN KEY(lesson_id) REFERENCES lessons(id)
+    )
+''')
+
+cursor.execute('''
     CREATE TABLE IF NOT EXISTS courses (
         course_id INTEGER PRIMARY KEY AUTOINCREMENT,
         course_name TEXT,
@@ -105,7 +133,7 @@ def handle_query(call):
         user = cursor.fetchone()
 
         if user and user[3] == "pending":
-            bot.reply_to(call.message, "Вы уже подали заявку, ожидайте ответа администратора.")
+            bot.edit_message_text("Вы уже подали заявку, ожидайте ответа администратора.", chat_id=call.message.chat.id, message_id=call.message.message_id)
         elif user and user[3] == "approved":
             markup = types.InlineKeyboardMarkup()
             button1 = types.InlineKeyboardButton("✏️ Отправить решение", callback_data=f'mm_send')
@@ -114,11 +142,11 @@ def handle_query(call):
             markup.add(button1)
             markup.add(button2)
             markup.add(button3)
-            bot.reply_to(call.message, f"""Здравствуйте, {call.message.from_user.first_name}!""", reply_markup=markup)
+            bot.edit_message_text(f"""Здравствуйте, {call.message.from_user.first_name}!""", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
         elif user and user[3] == "banned":
-            bot.reply_to(call.message, "Вы были забанены. Обратитесь к администратору")
+            bot.edit_message_text("Вы были забанены. Обратитесь к администратору", chat_id=call.message.chat.id, message_id=call.message.message_id)
         else:
-            bot.reply_to(call.message, f"""Здравcтвуйте! Сейчас вы будете проходить регистрацию. Пожалуйста введите своё <b>имя</b> и <b>фамилию</b> (<u>обязательно в таком порядке</u>)\n\nПример: "Артём Гусев".""", parse_mode="HTML")
+            bot.edit_message_text(f"""Здравcтвуйте! Сейчас вы будете проходить регистрацию. Пожалуйста введите своё <b>имя</b> и <b>фамилию</b> (<u>обязательно в таком порядке</u>)\n\nПример: "Артём Гусев".""", parse_mode="HTML", chat_id=call.message.chat.id, message_id=call.message.message_id)
             bot.register_next_step_handler(call.message, register_name)
     elif call.data.startswith("course_"):
         course_info(call)
@@ -126,6 +154,8 @@ def handle_query(call):
         add_student(call)
     elif call.data.startswith("add_developer_"):
         add_developer(call)
+    elif call.data.startswith("content_"):
+        course_content(call, int(call.data.split('_')[-1]))
 
 def mm_send(call):
     pass
@@ -249,10 +279,18 @@ def course_info(call):
             student_names.append(f"{user[0]} {user[1]}")
         else:
             student_names.append(f"Пользователь с ID {student_id} не найден")
+    
+    creator_name = ""
+    cursor.execute("SELECT first_name, last_name FROM users WHERE user_id=?", (int(creator_id),))
+    user = cursor.fetchone()
+    if user:
+        creator_name = f"{user[0]} {user[1]}"
+    else:
+        creator_name = f"Пользователь с ID {student_id} не найден"
 
     # Формируем сообщение с информацией о курсе
     course_info = f"📚 Курс: {course_name}\n\n"
-    course_info += f"Создатель: {creator_id}\n\n"
+    course_info += f"Создатель: \n{creator_name}\n\n"
     course_info += "👨‍🏫 Разработчики:\n" + "\n".join(developer_names) + "\n\n"
     course_info += "👨‍🎓 Студенты:\n" + "\n".join(student_names) + "\n"
 
@@ -264,6 +302,7 @@ def course_info(call):
     if int(call.from_user.id) == int(config["admin_id"]) or is_dev:
         markup.add(types.InlineKeyboardButton("➕ Добавить ученика", callback_data=f'add_student_{course_id}'))
         markup.add(types.InlineKeyboardButton("➕ Добавить разработчика", callback_data=f'add_developer_{course_id}'))
+        markup.add(types.InlineKeyboardButton("📂 Содержание", callback_data=f"content_{course_id}"))
     markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
 
     bot.edit_message_text(course_info, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
@@ -324,9 +363,29 @@ def add_developer_to_course(message, course_id):
     except ValueError:
         bot.reply_to(message, "Неправильный ID. Попробуйте снова.")
 
+def course_content(call, course_id):
+    text = """Содержание курса:"""
+    cursor.execute("SELECT * FROM users WHERE user_id=?", (call.from_user.id,))
+    user = cursor.fetchone()
+
+    if not user:
+        bot.send_message(call.message.chat.id, "Вы не зарегистрированы.")
+        return
+
+    is_admin = str(call.from_user.id) == config["admin_id"] # user[3] == "approved"
+
+    cursor.execute("SELECT * FROM lessons WHERE course_id=?", (course_id,))
+    lessons = cursor.fetchall()
+
+    if len(lessons) < 1:
+        text += "\nПока тут нет ни одного урока"
+    
+    for les in lessons:
+        text += f"""\n{les[1]}) {les[2]}"""
+    bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id)
+
 cre_courses = dict([])
 
-# Создание курса
 @bot.message_handler(commands=["create_course"])
 def create_course(message):
     bot.reply_to(message, f"""Вы начали создание курса. Чтобы его отменить напишите на любом этапе "stop".
