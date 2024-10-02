@@ -303,7 +303,7 @@ def course_info(call):
         markup.add(types.InlineKeyboardButton("➕ Добавить ученика", callback_data=f'add_student_{course_id}'))
         markup.add(types.InlineKeyboardButton("➕ Добавить разработчика", callback_data=f'add_developer_{course_id}'))
     markup.add(types.InlineKeyboardButton("📂 Содержание", callback_data=f"content_{course_id}"))
-    markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
+    markup.add(types.InlineKeyboardButton("📃 К курсам", callback_data="mm_courses_0"))
 
     bot.edit_message_text(course_info, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
 
@@ -380,9 +380,21 @@ def course_content(call, course_id):
     if len(lessons) < 1:
         text += "\nПока тут нет ни одного урока"
     
+    cursor.execute("SELECT * FROM courses WHERE course_id=?", (course_id,))
+    course = cursor.fetchone()
+    developer_ids = course[4] if course[4] else ""
+    is_dev = str(call.from_user.id) in developer_ids.split()
+
+    markup = types.InlineKeyboardMarkup()
+    # if int(call.from_user.id) == int(config["admin_id"]) or is_dev:
+    #     markup.add(types.InlineKeyboardButton("", callback_data=f'add_student_{course_id}'))
+    #     markup.add(types.InlineKeyboardButton("➕ Добавить разработчика", callback_data=f'add_developer_{course_id}'))
+    # markup.add(types.InlineKeyboardButton("Перейти к уроку", ))
+    markup.add(types.InlineKeyboardButton("🔙 К курсу", callback_data=f"course_{course_id}"))
+
     for les in lessons:
         text += f"""\n{les[1]}) {les[2]}"""
-    bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id)
+    bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup = markup)
 
 cre_courses = dict([])
 
