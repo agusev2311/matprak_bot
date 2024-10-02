@@ -156,6 +156,8 @@ def handle_query(call):
         add_developer(call)
     elif call.data.startswith("content_"):
         course_content(call, int(call.data.split('_')[-1]))
+    
+    bot.answer_callback_query(call.id)
 
 def mm_send(call):
     pass
