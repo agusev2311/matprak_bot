@@ -302,7 +302,7 @@ def course_info(call):
     if int(call.from_user.id) == int(config["admin_id"]) or is_dev:
         markup.add(types.InlineKeyboardButton("➕ Добавить ученика", callback_data=f'add_student_{course_id}'))
         markup.add(types.InlineKeyboardButton("➕ Добавить разработчика", callback_data=f'add_developer_{course_id}'))
-        markup.add(types.InlineKeyboardButton("📂 Содержание", callback_data=f"content_{course_id}"))
+    markup.add(types.InlineKeyboardButton("📂 Содержание", callback_data=f"content_{course_id}"))
     markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
 
     bot.edit_message_text(course_info, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
