@@ -15,8 +15,7 @@ bot = telebot.TeleBot(config["tg-token"])
 
 @bot.message_handler(commands=["start"])
 def start(message):
-    user = sql_return.find_user_id()
-
+    user = sql_return.find_user_id(message.from_user.id)
     if user and user[3] == "pending":
         bot.reply_to(message, "Вы уже подали заявку, ожидайте ответа администратора.")
     elif user and user[3] == "approved":
@@ -72,7 +71,7 @@ def handle_query(call):
     elif call.data.startswith("mm_courses_"):
         mm_courses(call, int(call.data.split('_')[-1]))
     elif call.data.startswith("mm_main_menu"):
-        user = sql_return.find_user_id()
+        user = sql_return.find_user_id(call.from_user.id)
 
         if user and user[3] == "pending":
             bot.edit_message_text("Вы уже подали заявку, ожидайте ответа администратора.", chat_id=call.message.chat.id, message_id=call.message.message_id)
@@ -108,7 +107,7 @@ def mm_check(call):
     pass
 
 def mm_courses(call, page=0):
-    user = sql_return.find_user_id()
+    user = sql_return.find_user_id(call.from_user.id)
 
     if not user:
         bot.send_message(call.message.chat.id, "Вы не зарегистрированы.")
@@ -175,7 +174,7 @@ def mm_courses(call, page=0):
 
 def course_info(call):
     course_id = int(call.data.split('_')[-1])
-    course = sql_return.find_course_id()
+    course = sql_return.find_course_id(course_id)
 
     if not course:
         bot.send_message(call.message.chat.id, "Курс не найден.")

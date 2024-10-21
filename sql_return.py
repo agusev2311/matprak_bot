@@ -100,7 +100,7 @@ def find_course_id(course_id):
 def is_course_dev(user_id, devs_id):
     with sqlite3.connect(config["db-name"]) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM users WHERE user_id=?", (call.from_user.id,))
+        cursor.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
         user = cursor.fetchone()
         return str(user_id) in devs_id.split()
 
@@ -108,7 +108,7 @@ def get_user_name(user_id):
     with sqlite3.connect(config["db-name"]) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT first_name, last_name FROM users WHERE user_id=?", (int(user_id),))
-        user = cursor.fetchone()
+        return cursor.fetchone()
 
 def students_list(course_id):
     with sqlite3.connect(config["db-name"]) as conn:
