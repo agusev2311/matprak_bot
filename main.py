@@ -100,16 +100,89 @@ def handle_query(call):
     elif call.data.startswith("content_"):
         course_content(call, int(call.data.split('_')[-2]), int(call.data.split("_")[-1]))
     elif call.data.startswith("lesson_"):
-        lesson_content(call, int(call.data.split('_')[-2]), int(call.data.split("_")[-1]))
+        lesson_content(call, int(call.data.split('_')[-3]), int(call.data.split('_')[-2]), int(call.data.split("_")[-1]))
     elif call.data.startswith("task_"):
-        task_info(call, int(call.data.split("_")[-2]), int(call.data.split("_")[-1]))
+        task_info(call, int(call.data.split("_")[-3]), int(call.data.split("_")[-2]), int(call.data.split("_")[-1]))
+    elif call.data.startswith("send-course_"):
+        mm_send_lesson(call=call, course_id=int(call.data.split("_")[-2]), page=int(call.data.split("_")[-1]))
     else:
         bot.answer_callback_query(call.id, "Обработчика для этой кнопки не существует.")
     
     bot.answer_callback_query(call.id)
 
-def mm_send(call):
-    pass
+def mm_send(call, page=0):
+    user = sql_return.find_user_id(call.from_user.id)
+
+    if not user:
+        bot.send_message(call.message.chat.id, "Вы не зарегистрированы.")
+        return
+
+    is_admin = (user[3] == "approved" and str(call.from_user.id) == config["admin_id"])
+
+    all_courses = sql_return.all_courses()
+
+    student_courses = []
+    
+    for course in all_courses:
+        student_ids = course[3] if course[3] else ""
+        developer_ids = course[4] if course[4] else ""
+        
+        if str(call.from_user.id) in student_ids.split():
+            student_courses.append(course)
+
+    filtered_courses = student_courses
+
+    courses_per_page = 5
+    total_pages = (len(filtered_courses) + courses_per_page - 1) // courses_per_page
+    page_courses = filtered_courses[page * courses_per_page:(page + 1) * courses_per_page]
+
+    markup = types.InlineKeyboardMarkup()
+    for course in page_courses:
+        markup.add(types.InlineKeyboardButton(f"👨‍🎓 {course[1]}", callback_data=f'send-course_{course[0]}_0'))
+
+    navigation = []
+    if page > 0:
+        navigation.append(types.InlineKeyboardButton("⬅️ Назад", callback_data=f'mm_send_{page - 1}'))
+    if page < total_pages - 1:
+        navigation.append(types.InlineKeyboardButton("➡️ Вперед", callback_data=f'mm_send_{page + 1}'))
+
+    markup.row(*navigation)
+    markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
+    bot.edit_message_text(f"Выберите курс для сдачи задания\nСтраница {page + 1} из {total_pages}:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+
+def mm_send_lesson(call, course_id, page=0):
+    user = sql_return.find_user_id(call.from_user.id)
+
+    if not user:
+        bot.send_message(call.message.chat.id, "Вы не зарегистрированы.")
+        return
+
+    is_admin = str(call.from_user.id) == config["admin_id"]
+
+    lessons = sql_return.lessons_in_course(course_id)
+
+    # all_courses = sql_return.all_courses()
+
+    courses_per_page = 5
+    total_pages = (len(lessons) + courses_per_page - 1) // courses_per_page
+    page_courses = lessons[page * courses_per_page:(page + 1) * courses_per_page]
+
+    description = "Выберите урок для отправки решения:\n"
+
+    markup = types.InlineKeyboardMarkup()
+    for lesson in page_courses:
+        markup.add(types.InlineKeyboardButton(f"{lesson[2]}", callback_data=f'mm_send_task_{lesson[0]}_0'))
+
+    navigation = []
+    if page > 0:
+        navigation.append(types.InlineKeyboardButton("⬅️ Назад", callback_data=f'send-course_{course_id}_{page - 1}'))
+    if page < total_pages - 1:
+        navigation.append(types.InlineKeyboardButton("➡️ Вперед", callback_data=f'send-course_{course_id}_{page + 1}'))
+
+    markup.row(*navigation)
+    markup.add(types.InlineKeyboardButton("🔙 К курсу", callback_data=f"mm_send"))
+
+    bot.edit_message_text(f"{description}\nСтраница {page + 1} из {total_pages}:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
 
 def mm_check(call):
     pass
@@ -293,9 +366,6 @@ def course_content(call, course_id, page=0):
 
     lessons = sql_return.lessons_in_course(course_id)
 
-    if len(lessons) < 1:
-        text += "\nПока тут нет ни одного урока"
-
     # all_courses = sql_return.all_courses()
 
     courses_per_page = 5
@@ -306,7 +376,7 @@ def course_content(call, course_id, page=0):
 
     markup = types.InlineKeyboardMarkup()
     for lesson in page_courses:
-        markup.add(types.InlineKeyboardButton(f"{lesson[2]}", callback_data=f'lesson_{lesson[0]}_0'))
+        markup.add(types.InlineKeyboardButton(f"{lesson[2]}", callback_data=f'lesson_{course_id}_{lesson[0]}_0'))
 
     navigation = []
     if page > 0:
@@ -319,7 +389,7 @@ def course_content(call, course_id, page=0):
 
     bot.edit_message_text(f"{description}\nСтраница {page + 1} из {total_pages}:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
 
-def lesson_content(call, lesson_id, page=0):
+def lesson_content(call, course_id, lesson_id, page=0):
     user = sql_return.find_user_id(call.from_user.id)
 
     if not user:
@@ -328,10 +398,7 @@ def lesson_content(call, lesson_id, page=0):
 
     is_admin = str(call.from_user.id) == config["admin_id"]
 
-    tasks = sql_return.tasks_in_lesson(lesson_id)
-
-    if len(tasks) < 1:
-        text += "\nПока тут нет ни одного задания"
+    tasks = sql_return.tasks_in_lesson(lesson_id)  
 
     courses_per_page = 5
     total_pages = (len(tasks) + courses_per_page - 1) // courses_per_page
@@ -341,22 +408,22 @@ def lesson_content(call, lesson_id, page=0):
 
     markup = types.InlineKeyboardMarkup()
     for lesson in page_courses:
-        markup.add(types.InlineKeyboardButton(f"{lesson[2]}", callback_data=f'task_{lesson[0]}_{lesson_id}'))
+        markup.add(types.InlineKeyboardButton(f"{lesson[2]}", callback_data=f'task_{lesson[0]}_{lesson_id}_{course_id}'))
 
     navigation = []
     if page > 0:
-        navigation.append(types.InlineKeyboardButton("⬅️ Назад", callback_data=f'course_content_{page - 1}'))
+        navigation.append(types.InlineKeyboardButton("⬅️ Назад", callback_data=f'lesson_{course_id}_{lesson_id}_{page - 1}'))
     if page < total_pages - 1:
-        navigation.append(types.InlineKeyboardButton("➡️ Вперед", callback_data=f'course_content_{page + 1}'))
+        navigation.append(types.InlineKeyboardButton("➡️ Вперед", callback_data=f'lesson_{course_id}_{lesson_id}_{page + 1}'))
 
     markup.row(*navigation)
-    markup.add(types.InlineKeyboardButton("🔙 К содержанию курса", callback_data=f"content_{lesson_id}_0"))
+    markup.add(types.InlineKeyboardButton("🔙 К содержанию курса", callback_data=f"content_{course_id}_0"))
     try:
         bot.edit_message_text(f"{description}\nСтраница {page + 1} из {total_pages}:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
     except:
         pass
 
-def task_info(call, task_id, lesson_id):
+def task_info(call, task_id, lesson_id, course_id):
     task = sql_return.task_info(task_id, lesson_id)
     
     if task:
@@ -394,7 +461,7 @@ def task_info(call, task_id, lesson_id):
                              f"📝 <b>Текст задачи</b>: {task_description if task_description else 'Нет текста задачи'}")
         
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("🔙 К списку задач", callback_data=f"lesson_{lesson_id}_0"))
+        markup.add(types.InlineKeyboardButton("🔙 К списку задач", callback_data=f"lesson_{course_id}_{lesson_id}_0"))
 
         bot.edit_message_text(task_info_message, 
                               chat_id=call.message.chat.id, 

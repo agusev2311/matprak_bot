@@ -53,6 +53,28 @@ def init_db():
             developers TEXT
         )
     ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS student_answers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL,
+            student_id INTEGER NOT NULL,
+            answer_text TEXT,
+            submission_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            verdict TEXT,           -- Вердикт преподавателя
+            comment TEXT,           -- Комментарий к вердикту
+            FOREIGN KEY(task_id) REFERENCES tasks(id),
+            FOREIGN KEY(student_id) REFERENCES users(user_id)
+        );
+    ''')
+    # Status:
+    # submitted — отправлен, но еще не проверен.
+    # reviewed — проверен преподавателем.
+    # late — отправлен после дедлайна. для проверки нужно подойти к преподователю
+
+    # Verdict:
+    # accepted
+    # rejected
+    
     conn.commit()
     cursor.close()
 
@@ -125,20 +147,14 @@ def developers_list(course_id):
 def try_add_student_to_course(course_id, new_students_list):
     with sqlite3.connect(config["db-name"]) as conn:
         cursor = conn.cursor()
-        try:
-            cursor.execute("UPDATE courses SET student_id=? WHERE course_id=?", (new_students_list, course_id))
-            conn.commit()
-        except:
-            pass
+        cursor.execute("UPDATE courses SET student_id=? WHERE course_id=?", (new_students_list, course_id))
+        conn.commit()
 
 def try_add_developer_to_course(course_id, new_developer_list):
     with sqlite3.connect(config["db-name"]) as conn:
         cursor = conn.cursor()
-        try:
-            cursor.execute("UPDATE courses SET developers=? WHERE course_id=?", (new_developer_list, course_id))
-            conn.commit()
-        except:
-            pass 
+        cursor.execute("UPDATE courses SET developers=? WHERE course_id=?", (new_developer_list, course_id))
+        conn.commit()
 
 def create_course(cre_cur_name, user_id, cre_courses):
     with sqlite3.connect(config["db-name"]) as conn:
