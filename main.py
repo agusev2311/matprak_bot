@@ -96,7 +96,7 @@ def handle_query(call):
     elif call.data.startswith("add_developer_"):
         add_developer(call)
     elif call.data.startswith("content_"):
-        course_content(call, int(call.data.split('_')[-1]))
+        course_content(call, int(call.data.split('_')[-2]), int(call.data.split("_")[-1]))
     
     bot.answer_callback_query(call.id)
 
@@ -221,7 +221,7 @@ def course_info(call):
     if int(call.from_user.id) == int(config["admin_id"]) or is_dev:
         markup.add(types.InlineKeyboardButton("➕ Добавить ученика", callback_data=f'add_student_{course_id}'))
         markup.add(types.InlineKeyboardButton("➕ Добавить разработчика", callback_data=f'add_developer_{course_id}'))
-    markup.add(types.InlineKeyboardButton("📂 Содержание", callback_data=f"content_{course_id}"))
+    markup.add(types.InlineKeyboardButton("📂 Содержание", callback_data=f"content_{course_id}_0"))
     markup.add(types.InlineKeyboardButton("📃 К курсам", callback_data="mm_courses_0"))
 
     bot.edit_message_text(course_info, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
@@ -274,8 +274,7 @@ def add_developer_to_course(message, course_id):
     except ValueError:
         bot.reply_to(message, "Неправильный ID. Попробуйте снова.")
 
-def course_content(call, course_id):
-    text = """Содержание курса:"""
+def course_content(call, course_id, page=0):
     user = sql_return.find_user_id(call.from_user.id)
 
     if not user:
@@ -288,17 +287,31 @@ def course_content(call, course_id):
 
     if len(lessons) < 1:
         text += "\nПока тут нет ни одного урока"
-    
-    course = sql_return.find_course_id(course_id)
-    developer_ids = course[4] if course[4] else ""
-    is_dev = str(call.from_user.id) in developer_ids.split()
+
+    # all_courses = sql_return.all_courses()
+
+    courses_per_page = 5
+    total_pages = (len(lessons) + courses_per_page - 1) // courses_per_page
+    page_courses = lessons[page * courses_per_page:(page + 1) * courses_per_page]
+
+    description = "Содержание курса:\n"
 
     markup = types.InlineKeyboardMarkup()
+    for lesson in page_courses:
+        markup.add(types.InlineKeyboardButton(f"{lesson[2]}", callback_data=f'lesson_{lesson[0]}'))
+
+    navigation = []
+    if page > 0:
+        navigation.append(types.InlineKeyboardButton("⬅️ Назад", callback_data=f'course_content_{page - 1}'))
+    if page < total_pages - 1:
+        navigation.append(types.InlineKeyboardButton("➡️ Вперед", callback_data=f'course_content_{page + 1}'))
+
+    markup.row(*navigation)
     markup.add(types.InlineKeyboardButton("🔙 К курсу", callback_data=f"course_{course_id}"))
 
-    for les in lessons:
-        text += f"""\n{les[1]}) {les[2]}"""
-    bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup = markup)
+    bot.edit_message_text(f"{description}\nСтраница {page + 1} из {total_pages}:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+
+    # bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup = markup)
 
 cre_courses = dict([])
 
