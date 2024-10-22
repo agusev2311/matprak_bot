@@ -158,3 +158,14 @@ def tasks_in_lesson(lesson_id):
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM tasks WHERE lesson_id=?", (lesson_id,))
         return cursor.fetchall()
+
+def task_info(task_id, lesson_id):
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT t.title, t.status, t.deadline, t.description, l.title
+            FROM tasks t
+            INNER JOIN lessons l ON t.lesson_id = l.id
+            WHERE t.id = ? AND t.lesson_id = ?
+        ''', (task_id, lesson_id))
+        return cursor.fetchone()

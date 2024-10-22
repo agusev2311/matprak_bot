@@ -2,8 +2,10 @@ import telebot
 from telebot import types
 import sqlite3
 import time
+import datetime
 import sql_return
 import json
+from dateutil.relativedelta import relativedelta
 
 with open('config.json', 'r') as file:
     config = json.load(file)
@@ -355,9 +357,54 @@ def lesson_content(call, lesson_id, page=0):
         pass
 
 def task_info(call, task_id, lesson_id):
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("🔙 К списку задач", callback_data=f"lesson_{lesson_id}_0"))
-    bot.edit_message_text(f"just random text", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+    task = sql_return.task_info(task_id, lesson_id)
+    
+    if task:
+        task_title, task_status, task_deadline, task_description, lesson_title = task
+
+        status_translation = {
+            'open': 'Открыт',
+            'arc': 'Архивирован',
+            'dev': 'В разработке'
+        }
+        task_status = status_translation.get(task_status, 'Неизвестен')
+
+        if task_deadline:
+            deadline_date = datetime.datetime.strptime(task_deadline, '%Y-%m-%d %H:%M:%S')
+            current_date = datetime.datetime.now()
+            days_left = (deadline_date - current_date).total_seconds() / (60 * 60 * 24)
+            if task_status == 'Архивирован' or deadline_date < current_date:
+                deadline_str = deadline_date.strftime('%d-%m-%Y %H:%M')
+                deadline_info = f"🗓 <b>Дедлайн</b>: {deadline_str}"
+            elif days_left < 2:
+                deadline_str = deadline_date.strftime('%d-%m-%Y %H:%M')
+                deadline_info = f"🔥 <b>Дедлайн через</b>: {time_left_str} ({deadline_str})"
+            else:
+                time_left = relativedelta(deadline_date, current_date)
+                time_left_str = f"{time_left.days} дней, {time_left.hours} часов, {time_left.minutes} минут"
+                deadline_str = deadline_date.strftime('%d-%m-%Y %H:%M')
+                deadline_info = f"⏰ <b>Дедлайн через</b>: {time_left_str} ({deadline_str})"
+        else:
+            deadline_info = "⏰ <b>Дедлайн</b>: Не указан"
+
+        task_info_message = (f"📌 <b>Название задачи</b>: {task_title}\n"
+                             f"📘 <b>Урок</b>: {lesson_title}\n"
+                             f"🔖 <b>Статус</b>: {task_status}\n"
+                             f"{deadline_info}\n"
+                             f"📝 <b>Текст задачи</b>: {task_description if task_description else 'Нет текста задачи'}")
+        
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🔙 К списку задач", callback_data=f"lesson_{lesson_id}_0"))
+
+        bot.edit_message_text(task_info_message, 
+                              chat_id=call.message.chat.id, 
+                              message_id=call.message.message_id, 
+                              reply_markup=markup, 
+                              parse_mode="HTML")
+    else:
+        bot.edit_message_text("❗️ Задача не найдена", 
+                              chat_id=call.message.chat.id, 
+                              message_id=call.message.message_id)
 
 cre_courses = dict([])
 
