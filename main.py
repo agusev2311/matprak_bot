@@ -105,6 +105,10 @@ def handle_query(call):
         task_info(call, int(call.data.split("_")[-3]), int(call.data.split("_")[-2]), int(call.data.split("_")[-1]))
     elif call.data.startswith("send-course_"):
         mm_send_lesson(call=call, course_id=int(call.data.split("_")[-2]), page=int(call.data.split("_")[-1]))
+    elif call.data.startswith("send-task_"):
+        mm_send_task(call, int(call.data.split("_")[-3]), int(call.data.split("_")[-2]), int(call.data.split("_")[-1]))
+    elif call.data.startswith("send-final_"):
+        mm_send_final(call, int(call.data.split("_")[-3]), int(call.data.split("_")[-2]), int(call.data.split("_")[-1]))
     else:
         bot.answer_callback_query(call.id, "Обработчика для этой кнопки не существует.")
     
@@ -171,7 +175,7 @@ def mm_send_lesson(call, course_id, page=0):
 
     markup = types.InlineKeyboardMarkup()
     for lesson in page_courses:
-        markup.add(types.InlineKeyboardButton(f"{lesson[2]}", callback_data=f'mm_send_task_{lesson[0]}_0'))
+        markup.add(types.InlineKeyboardButton(f"{lesson[2]}", callback_data=f'send-task_{course_id}_{lesson[0]}_0'))
 
     navigation = []
     if page > 0:
@@ -183,6 +187,101 @@ def mm_send_lesson(call, course_id, page=0):
     markup.add(types.InlineKeyboardButton("🔙 К курсу", callback_data=f"mm_send"))
 
     bot.edit_message_text(f"{description}\nСтраница {page + 1} из {total_pages}:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+
+def mm_send_task(call, course_id, lesson_id, page=0):
+    user = sql_return.find_user_id(call.from_user.id)
+
+    if not user:
+        bot.send_message(call.message.chat.id, "Вы не зарегистрированы.")
+        return
+
+    is_admin = str(call.from_user.id) == config["admin_id"]
+
+    tasks = sql_return.tasks_in_lesson(lesson_id)  
+
+    courses_per_page = 5
+    total_pages = (len(tasks) + courses_per_page - 1) // courses_per_page
+    page_courses = tasks[page * courses_per_page:(page + 1) * courses_per_page]
+
+    description = "Содержание урока:\n"
+
+    markup = types.InlineKeyboardMarkup()
+    for lesson in page_courses:
+        markup.add(types.InlineKeyboardButton(f"{lesson[2]}", callback_data=f'send-final_{lesson_id}_{course_id}_{lesson[0]}'))
+
+    navigation = []
+    if page > 0:
+        navigation.append(types.InlineKeyboardButton("⬅️ Назад", callback_data=f'send-task_{course_id}_{lesson_id}_{page - 1}'))
+    if page < total_pages - 1:
+        navigation.append(types.InlineKeyboardButton("➡️ Вперед", callback_data=f'send-task_{course_id}_{lesson_id}_{page + 1}'))
+
+    markup.row(*navigation)
+    markup.add(types.InlineKeyboardButton("🔙 К содержанию курса", callback_data=f"send-course_{course_id}_0"))
+    try:
+        bot.edit_message_text(f"{description}\nСтраница {page + 1} из {total_pages}:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+    except:
+        pass
+
+new_student_answer_dict = dict([])
+
+def mm_send_final(call, lesson_id, course_id, task_id):
+    task = sql_return.task_info(task_id, lesson_id)
+    
+    if task:
+        task_title, task_status, task_deadline, task_description, lesson_title = task
+
+        status_translation = {
+            'open': 'Открыт',
+            'arc': 'Архивирован',
+            'dev': 'В разработке'
+        }
+        task_status = status_translation.get(task_status, 'Неизвестен')
+
+        if task_deadline:
+            deadline_date = datetime.datetime.strptime(task_deadline, '%Y-%m-%d %H:%M:%S')
+            current_date = datetime.datetime.now()
+            days_left = (deadline_date - current_date).total_seconds() / (60 * 60 * 24)
+            if task_status == 'Архивирован' or deadline_date < current_date:
+                deadline_str = deadline_date.strftime('%d-%m-%Y %H:%M')
+                deadline_info = f"🗓 <b>Дедлайн</b>: {deadline_str}"
+            elif days_left < 2:
+                deadline_str = deadline_date.strftime('%d-%m-%Y %H:%M')
+                deadline_info = f"🔥 <b>Дедлайн через</b>: {time_left_str} ({deadline_str})"
+            else:
+                time_left = relativedelta(deadline_date, current_date)
+                time_left_str = f"{time_left.days} дней, {time_left.hours} часов, {time_left.minutes} минут"
+                deadline_str = deadline_date.strftime('%d-%m-%Y %H:%M')
+                deadline_info = f"⏰ <b>Дедлайн через</b>: {time_left_str} ({deadline_str})"
+        else:
+            deadline_info = "⏰ <b>Дедлайн</b>: Не указан"
+
+        task_info_message = (f"Вы начали сдачу решения для задачи, приведённой ниже. Если вы хотите отменить это действие, напишите вместо текста решения \"Stop\".\n\nЕсли вам нужно прикрепить файл (включая изображение), загрузите его на gachi.gay и вставьте ссылку в текст ответа. Если вам нужно прикрепить код, вы можете вставить его в качестве файла, через Telegram, экранировав его тремя символами \"`\", или загрузив на pastebin.com.\n\n"
+                             f"📌 <b>Название задачи</b>: {task_title}\n"
+                             f"📘 <b>Урок</b>: {lesson_title}\n"
+                             f"🔖 <b>Статус</b>: {task_status}\n"
+                             f"{deadline_info}\n"
+                             f"📝 <b>Текст задачи</b>: {task_description if task_description else 'Нет текста задачи'}")
+
+        bot.edit_message_text(task_info_message, 
+                              chat_id=call.message.chat.id, 
+                              message_id=call.message.message_id, 
+                              parse_mode="HTML")
+
+        bot.register_next_step_handler(call.message, mm_send_final_2, lesson_id, course_id, task_id, call.from_user.id)
+        # new_student_answer_dict[call.message.from_user.id] == [lesson_id, course_id, task_id]
+    else:
+        bot.edit_message_text("❗️ Задача не найдена", 
+                              chat_id=call.message.chat.id, 
+                              message_id=call.message.message_id)
+
+def mm_send_final_2(message, lesson_id, course_id, task_id, user_id):
+    answer_text = message.text
+    # lesson_id, course_id, task_id = new_student_answer_dict[message.from_user.id]
+    if message.text == "Stop":
+        bot.send_message(message.chat.id, "Отменено")
+        return
+    sql_return.new_student_answer(task_id, user_id, answer_text)
+    bot.send_message(message.chat.id, "Решение отправлено на проверку")
 
 def mm_check(call):
     pass

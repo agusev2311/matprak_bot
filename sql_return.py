@@ -1,5 +1,6 @@
 import sqlite3
 import json
+import datetime
 
 with open('config.json', 'r') as file:
     config = json.load(file)
@@ -66,10 +67,6 @@ def init_db():
             FOREIGN KEY(student_id) REFERENCES users(user_id)
         );
     ''')
-    # Status:
-    # submitted — отправлен, но еще не проверен.
-    # reviewed — проверен преподавателем.
-    # late — отправлен после дедлайна. для проверки нужно подойти к преподователю
 
     # Verdict:
     # accepted
@@ -185,3 +182,10 @@ def task_info(task_id, lesson_id):
             WHERE t.id = ? AND t.lesson_id = ?
         ''', (task_id, lesson_id))
         return cursor.fetchone()
+    
+def new_student_answer(task_id, student_id, answer_text):
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO student_answers (task_id, student_id, answer_text, submission_date, verdict, comment) VALUES (?, ?, ?, ?, ?, ?)",
+                       (task_id, student_id, answer_text, str(datetime.datetime.now()), None, None))  # Здесь кортеж
+        conn.commit()
