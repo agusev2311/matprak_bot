@@ -55,7 +55,7 @@ def handle_query(call):
     user_id = call.data.split('_')[-1]
     if call.data.startswith("reg_approve_"):
         sql_return.set_user_status(user_id, "approved")
-        bot.send_message(user_id, "Ваша регистрация была одобрена! Введите /start")
+        bot.send_message(user_id, "Ваша регистрация была одобрена! Введите /start для попадания в главное меню или \help для помощи.")
         bot.delete_message(call.message.chat.id, call.message.message_id)
     elif call.data.startswith("reg_deny_"):
         bot.send_message(user_id, "Ваша заявка была отклонена. Вы можете подать её снова.")
@@ -97,6 +97,10 @@ def handle_query(call):
         add_developer(call)
     elif call.data.startswith("content_"):
         course_content(call, int(call.data.split('_')[-2]), int(call.data.split("_")[-1]))
+    elif call.data.startswith("lesson_"):
+        bot.answer_callback_query(call.id, "Функция в разработке")
+    else:
+        bot.answer_callback_query(call.id, "Обработчика для этой кнопки не существует.")
     
     bot.answer_callback_query(call.id)
 
@@ -384,5 +388,19 @@ def create_course_name(message):
 @bot.message_handler(commands=["support"])
 def support(message):
     bot.reply_to(message, f"Поддержка находится в лс у @agusev2311")
+
+@bot.message_handler(commands=["help"])
+def help(message):
+    text = """Список всех команд в боте и faq:
+Команды:
+/start - регистрация или главное меню
+
+/create_course - создать курс. Скоро для этой функции появится более удобная оболочка
+
+/support - поддержка
+
+/help - этот список
+"""
+    bot.send_message(message.chat.id, text)
 
 bot.polling(none_stop=True)
