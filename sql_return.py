@@ -152,3 +152,9 @@ def lessons_in_course(course_id):
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM lessons WHERE course_id=?", (course_id,))
         return cursor.fetchall()
+
+def tasks_in_lesson(lesson_id):
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM tasks WHERE lesson_id=?", (lesson_id,))
+        return cursor.fetchall()
