@@ -100,7 +100,7 @@ def handle_query(call):
     elif call.data.startswith("lesson_"):
         lesson_content(call, int(call.data.split('_')[-2]), int(call.data.split("_")[-1]))
     elif call.data.startswith("task_"):
-        task_info(call, int(call.data.split("_")[-1]))
+        task_info(call, int(call.data.split("_")[-2]), int(call.data.split("_")[-1]))
     else:
         bot.answer_callback_query(call.id, "Обработчика для этой кнопки не существует.")
     
@@ -335,11 +335,11 @@ def lesson_content(call, lesson_id, page=0):
     total_pages = (len(tasks) + courses_per_page - 1) // courses_per_page
     page_courses = tasks[page * courses_per_page:(page + 1) * courses_per_page]
 
-    description = "Содержание курса:\n"
+    description = "Содержание урока:\n"
 
     markup = types.InlineKeyboardMarkup()
     for lesson in page_courses:
-        markup.add(types.InlineKeyboardButton(f"{lesson[2]}", callback_data=f'task_{lesson[0]}'))
+        markup.add(types.InlineKeyboardButton(f"{lesson[2]}", callback_data=f'task_{lesson[0]}_{lesson_id}'))
 
     navigation = []
     if page > 0:
@@ -348,14 +348,17 @@ def lesson_content(call, lesson_id, page=0):
         navigation.append(types.InlineKeyboardButton("➡️ Вперед", callback_data=f'course_content_{page + 1}'))
 
     markup.row(*navigation)
-    markup.add(types.InlineKeyboardButton("🔙 К уроку", callback_data=f"lesson_{lesson_id}_0"))
+    markup.add(types.InlineKeyboardButton("🔙 К содержанию курса", callback_data=f"content_{lesson_id}_0"))
     try:
         bot.edit_message_text(f"{description}\nСтраница {page + 1} из {total_pages}:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
     except:
         pass
 
-def task_info(call, task_id):
-    pass
+def task_info(call, task_id, lesson_id):
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🔙 К списку задач", callback_data=f"lesson_{lesson_id}_0"))
+    bot.edit_message_text(f"just random text", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+
 cre_courses = dict([])
 
 @bot.message_handler(commands=["create_course"])
