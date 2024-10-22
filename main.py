@@ -248,10 +248,10 @@ def add_student_to_course(message, course_id):
             bot.reply_to(message, "Пользователь с таким ID не найден.")
             return
     
-        student_ids = sql_return.students_list()
+        student_ids = sql_return.students_list(course_id)
         if str(student_id) not in student_ids.split():
             new_student_ids = student_ids + f" {student_id}"
-            sql_return.try_add_student_to_course(new_student_ids.strip(), course_id)
+            sql_return.try_add_student_to_course(course_id, new_student_ids.strip())
             bot.reply_to(message, f"Ученик {student[1]} {student[2]} добавлен в курс!")
         else:
             bot.reply_to(message, "Этот ученик уже находится в курсе.")
@@ -272,10 +272,10 @@ def add_developer_to_course(message, course_id):
             bot.reply_to(message, "Пользователь с таким ID не найден.")
             return
 
-        developer_ids = sql_return.developers_list()
+        developer_ids = sql_return.developers_list(course_id)
         if str(developer_id) not in developer_ids.split():
             new_developer_ids = developer_ids + f" {developer_id}"
-            sql_return.try_add_developer_to_course(new_developer_ids.strip(), course_id)
+            sql_return.try_add_developer_to_course(course_id, new_developer_ids.strip())
             bot.reply_to(message, f"Разработчик {developer[1]} {developer[2]} добавлен в курс!")
         else:
             bot.reply_to(message, "Этот разработчик уже находится в курсе.")
