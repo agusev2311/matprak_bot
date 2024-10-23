@@ -57,9 +57,10 @@ def handle_query(call):
     user_id = call.data.split('_')[-1]
     if call.data.startswith("reg_approve_"):
         sql_return.set_user_status(user_id, "approved")
-        bot.send_message(user_id, "Ваша регистрация была одобрена! Введите /start для попадания в главное меню или \help для помощи.")
+        bot.send_message(user_id, "Ваша регистрация была одобрена! Введите /start для попадания в главное меню или /help для помощи.")
         bot.delete_message(call.message.chat.id, call.message.message_id)
     elif call.data.startswith("reg_deny_"):
+        sql_return.delete_user(user_id)
         bot.send_message(user_id, "Ваша заявка была отклонена. Вы можете подать её снова.")
         bot.delete_message(call.message.chat.id, call.message.message_id)
     elif call.data.startswith("reg_ban_"):

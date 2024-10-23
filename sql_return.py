@@ -89,7 +89,7 @@ def reg_user(user_id, first_name, second_name, status="pending"):
     with sqlite3.connect(config["db-name"]) as conn:
         cursor = conn.cursor()
         cursor.execute("INSERT INTO users (user_id, first_name, last_name, status) VALUES (?, ?, ?, ?)",
-                    user_id, first_name, second_name, status)
+                    (user_id, first_name, second_name, status))
         conn.commit()
 
 def set_user_status(user_id, status):
