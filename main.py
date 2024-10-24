@@ -350,7 +350,7 @@ def check_task(type: str, call, task_data, comment: str = "None"):
     print(task_data)
     markup = types.InlineKeyboardMarkup()
     if task_data == None:
-        markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data=type))
+        markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="mm_check_0"))
         bot.edit_message_text(f"У вас нет непроверенных решений в этом разделе", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
         return
     v = []
