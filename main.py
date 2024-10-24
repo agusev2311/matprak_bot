@@ -117,10 +117,9 @@ def handle_query(call):
     elif call.data.startswith("check-add-comment_"):
         bot.send_message(call.message.chat.id, "Введите комментарий")
         bot.register_next_step_handler(call.message, check_add_comment, call, call.data.split("_")[-3], int(call.data.split("_")[-2]))
-        # check_task(int(call.data.split("_")[-3]), call, int(call.data.split("_")[-2]), int(call.data.split("_")[-1]))
         # "check-add-comment_{task_data[0]}_{comment}"
     elif call.data.startswith("check-final"):
-        pass
+        check_final(call, int(call.data.split("_")[-2]), call.data.split("_")[-3], call.data.split("_")[-1])
         # "check-final_accept_{task_data[0]}_{comment}"
         # "check-final_reject_{task_data[0]}_{comment}"
     else:
@@ -354,6 +353,7 @@ def check_task(type: str, call, task_data, comment: str = "None"):
         bot.edit_message_text(f"У вас нет непроверенных решений в этом разделе", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
         return
     v = []
+    print(task_data)
     if not isinstance(task_data, dict):
         v.append(types.InlineKeyboardButton("✅ Принять", callback_data=f"check-final_accept_{task_data[0]}_{comment}"))
         v.append(types.InlineKeyboardButton("❌ Отклонить", callback_data=f"check-final_reject_{task_data[0]}_{comment}"))
@@ -369,12 +369,22 @@ def check_task(type: str, call, task_data, comment: str = "None"):
         markup.add(types.InlineKeyboardButton("✍️ Добавить комментарий", callback_data=f"check-add-comment_{type}_{task_data['answer_id']}_{comment}"))
         task_data_2 = sql_return.get_task_from_id(task_data["task_id"])
         lesson_data = sql_return.get_lesson_from_id(task_data_2[1])
-        text = f"<b>Решение</b>:\n<b>Отправил</b> {sql_return.get_user_name(task_data['student_id'])[0]} {sql_return.get_user_name(task_data['student_id'])[1]}/n<b>Задача</b>: {lesson_data[2]}\n<b>Решение</b>:\n{task_data['answer_text']}\n<b>Комментарий к вердикту</b>: {comment}"
+        text = f"<b>Решение</b>:\n<b>Отправил</b> {sql_return.get_user_name(task_data['student_id'])[0]} {sql_return.get_user_name(task_data['student_id'])[1]}\n<b>Задача</b>: {lesson_data[2]}\n<b>Решение</b>:\n{task_data['answer_text']}\n<b>Комментарий к вердикту</b>: {comment}"
     bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML")
     
 def check_add_comment(message, call, type: str, task_id: int):
     comment = message.text
+    if "\n" in comment or " " in comment:
+        bot.send_mesage(message.chat.id, "К сожалению на данный момент из-за технических трудностей комментарий не может содержать пробелы и переносы строк. Вы можете заменить их другими символами. ")
     check_task(type, call, sql_return.get_student_answer_from_id(task_id), comment)
+
+def check_final(call, answer_id: int, verdict: str, comment: str = "None"):
+    if comment == "None":
+        comment = None
+    sql_return.check_student_answer(verdict, comment, answer_id)
+    sa_data = sql_return.get_student_answer_from_id(answer_id)
+    bot.send_message(sa_data[2], f"Ваше решение проверено!\n\nТекст решения:\n{sa_data[3]}\nВердикт: {verdict}\nКомментарий: {comment}")
+    mm_check(call)
 
 def mm_courses(call, page=0):
     user = sql_return.find_user_id(call.from_user.id)

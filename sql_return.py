@@ -263,7 +263,7 @@ def last_student_answer_all(developer_id: int):
                 "submission_date": submission_date
             }
         else:
-            return "No unchecked answers found."
+            return None
 
 def get_task_from_id(task_id):
     with sqlite3.connect(config["db-name"]) as conn:
@@ -282,3 +282,9 @@ def get_student_answer_from_id(sa_id):
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM student_answers WHERE id=?", (sa_id,))
         return cursor.fetchone()
+
+def check_student_answer(verdict: str, comment: str | None, student_answer_id: int):
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE student_answers SET verdict=? WHERE id=?", (verdict, student_answer_id))
+        cursor.execute("UPDATE student_answers SET comment=? WHERE id=?", (comment, student_answer_id))
