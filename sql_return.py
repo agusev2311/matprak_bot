@@ -1,6 +1,7 @@
 import sqlite3
 import json
 import datetime
+import os
 
 with open('config.json', 'r') as file:
     config = json.load(file)
@@ -153,14 +154,14 @@ def try_add_developer_to_course(course_id, new_developer_list):
         cursor.execute("UPDATE courses SET developers=? WHERE course_id=?", (new_developer_list, course_id))
         conn.commit()
 
-def create_course(cre_cur_name, user_id, cre_courses):
+def create_course(cre_cur_name: str, user_id: int, cre_courses):
     with sqlite3.connect(config["db-name"]) as conn:
         cursor = conn.cursor()
         cursor.execute("INSERT INTO courses (course_name, creator_id, developers) VALUES (?, ?, ?)",
             (cre_cur_name, user_id, " ".join([str(i) for i in cre_courses[user_id][0]])))
         conn.commit()
 
-def lessons_in_course(course_id):
+def lessons_in_course(course_id: int):
     with sqlite3.connect(config["db-name"]) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM lessons WHERE course_id=?", (course_id,))
@@ -172,20 +173,112 @@ def tasks_in_lesson(lesson_id):
         cursor.execute("SELECT * FROM tasks WHERE lesson_id=?", (lesson_id,))
         return cursor.fetchall()
 
-def task_info(task_id, lesson_id):
+def task_info(task_id: int):
     with sqlite3.connect(config["db-name"]) as conn:
         cursor = conn.cursor()
-        cursor.execute('''
-            SELECT t.title, t.status, t.deadline, t.description, l.title
-            FROM tasks t
-            INNER JOIN lessons l ON t.lesson_id = l.id
-            WHERE t.id = ? AND t.lesson_id = ?
-        ''', (task_id, lesson_id))
+        cursor.execute('''SELECT * FROM tasks WHERE id = ?''', (task_id, ))
         return cursor.fetchone()
     
-def new_student_answer(task_id, student_id, answer_text):
+def new_student_answer(task_id: int, student_id: int, answer_text: str):
     with sqlite3.connect(config["db-name"]) as conn:
         cursor = conn.cursor()
         cursor.execute("INSERT INTO student_answers (task_id, student_id, answer_text, submission_date, verdict, comment) VALUES (?, ?, ?, ?, ?, ?)",
                        (task_id, student_id, answer_text, str(datetime.datetime.now()), None, None))  # Здесь кортеж
         conn.commit()
+
+def next_name(dir: str) -> str:
+    files = os.listdir(dir)
+    new_files = []
+    for i in files:
+        new_files.append(i.split(".")[0])
+    i = 0
+    while True:
+        numb = hex(i)[2:]
+        if numb not in new_files:
+            break
+        i += 1
+    return hex(i)[2:]
+
+def save_photo(downloaded_file):
+    downloaded_file
+    
+    save_path = f'files/{next_name("files")}.jpg'
+    
+    with open(save_path, 'wb') as new_file:
+        new_file.write(downloaded_file)
+
+def last_student_answer_course(course_id: int):
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT sa.id, sa.task_id, sa.student_id, sa.answer_text, sa.submission_date
+            FROM student_answers sa
+            JOIN tasks t ON sa.task_id = t.id
+            JOIN lessons l ON t.lesson_id = l.id
+            JOIN courses c ON l.course_id = c.course_id
+            WHERE c.course_id = ? AND sa.verdict IS NULL
+            ORDER BY sa.submission_date ASC
+            LIMIT 1;
+        ''', (course_id,))
+        return cursor.fetchone()
+
+def last_student_answer_all(developer_id: int):
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        query = '''
+            SELECT course_id 
+            FROM courses 
+            WHERE developers LIKE ?
+        '''
+        # Поиск всех курсов с данным developer_id
+        cursor.execute(query, (f"%{developer_id}%",))
+        courses = cursor.fetchall()
+
+        if not courses:
+            return "No courses found for this developer."
+
+        # Шаг 2: Найти задания по этим курсам с непроверенными решениями
+        query = '''
+            SELECT sa.id, sa.task_id, sa.student_id, sa.answer_text, sa.submission_date
+            FROM student_answers sa
+            JOIN tasks t ON sa.task_id = t.id
+            JOIN lessons l ON t.lesson_id = l.id
+            WHERE l.course_id IN ({})
+            AND sa.verdict IS NULL
+            ORDER BY sa.submission_date ASC
+            LIMIT 1
+        '''.format(','.join('?' * len(courses)))
+
+        course_ids = [course[0] for course in courses]
+        cursor.execute(query, course_ids)
+        result = cursor.fetchone()
+
+        if result:
+            answer_id, task_id, student_id, answer_text, submission_date = result
+            return {
+                "answer_id": answer_id,
+                "task_id": task_id,
+                "student_id": student_id,
+                "answer_text": answer_text,
+                "submission_date": submission_date
+            }
+        else:
+            return "No unchecked answers found."
+
+def get_task_from_id(task_id):
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM tasks WHERE id=?", (task_id,))
+        return cursor.fetchone()
+
+def get_lesson_from_id(lesson_id):
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM lessons WHERE id=?", (lesson_id,))
+        return cursor.fetchone()
+
+def get_student_answer_from_id(sa_id):
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM student_answers WHERE id=?", (sa_id,))
+        return cursor.fetchone()

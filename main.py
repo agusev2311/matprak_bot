@@ -23,7 +23,7 @@ def start(message):
     elif user and user[3] == "approved":
         markup = types.InlineKeyboardMarkup()
         button1 = types.InlineKeyboardButton("✏️ Отправить решение", callback_data=f'mm_send')
-        button2 = types.InlineKeyboardButton("🔍 Принять решение", callback_data=f'mm_check')
+        button2 = types.InlineKeyboardButton("🔍 Принять решение", callback_data=f'mm_check_0')
         button3 = types.InlineKeyboardButton("📃 Все курсы", callback_data=f'mm_courses_0')
         markup.add(button1)
         markup.add(button2)
@@ -70,7 +70,7 @@ def handle_query(call):
     elif call.data.startswith("mm_send"):
         mm_send(call)
     elif call.data.startswith("mm_check"):
-        mm_check(call)
+        mm_check(call, int(call.data.split("_")[-1]))
     elif call.data.startswith("mm_courses_"):
         mm_courses(call, int(call.data.split('_')[-1]))
     elif call.data.startswith("mm_main_menu"):
@@ -81,7 +81,7 @@ def handle_query(call):
         elif user and user[3] == "approved":
             markup = types.InlineKeyboardMarkup()
             button1 = types.InlineKeyboardButton("✏️ Отправить решение", callback_data=f'mm_send')
-            button2 = types.InlineKeyboardButton("🔍 Принять решение", callback_data=f'mm_check')
+            button2 = types.InlineKeyboardButton("🔍 Принять решение", callback_data=f'mm_check_0')
             button3 = types.InlineKeyboardButton("📃 Все курсы", callback_data=f'mm_courses_0')
             markup.add(button1)
             markup.add(button2)
@@ -110,6 +110,19 @@ def handle_query(call):
         mm_send_task(call, int(call.data.split("_")[-3]), int(call.data.split("_")[-2]), int(call.data.split("_")[-1]))
     elif call.data.startswith("send-final_"):
         mm_send_final(call, int(call.data.split("_")[-3]), int(call.data.split("_")[-2]), int(call.data.split("_")[-1]))
+    elif call.data.startswith("check-course-all_"):
+        check_all(call)
+    elif call.data.startswith("check-course_"):
+        check_course(call, int(call.data.split("_")[-1]))
+    elif call.data.startswith("check-add-comment_"):
+        bot.send_message(call.message.chat.id, "Введите комментарий")
+        bot.register_next_step_handler(call.message, check_add_comment, call, call.data.split("_")[-3], int(call.data.split("_")[-2]))
+        # check_task(int(call.data.split("_")[-3]), call, int(call.data.split("_")[-2]), int(call.data.split("_")[-1]))
+        # "check-add-comment_{task_data[0]}_{comment}"
+    elif call.data.startswith("check-final"):
+        pass
+        # "check-final_accept_{task_data[0]}_{comment}"
+        # "check-final_reject_{task_data[0]}_{comment}"
     else:
         bot.answer_callback_query(call.id, "Обработчика для этой кнопки не существует.")
     
@@ -226,10 +239,10 @@ def mm_send_task(call, course_id, lesson_id, page=0):
 new_student_answer_dict = dict([])
 
 def mm_send_final(call, lesson_id, course_id, task_id):
-    task = sql_return.task_info(task_id, lesson_id)
+    task = sql_return.task_info(task_id)
     
     if task:
-        task_title, task_status, task_deadline, task_description, lesson_title = task
+        task_id, lesson_id, task_title, task_status, task_deadline, task_description = task
 
         status_translation = {
             'open': 'Открыт',
@@ -258,7 +271,6 @@ def mm_send_final(call, lesson_id, course_id, task_id):
 
         task_info_message = (f"Вы начали сдачу решения для задачи, приведённой ниже. Если вы хотите отменить это действие, напишите вместо текста решения \"Stop\".\n\nЕсли вам нужно прикрепить файл (включая изображение), загрузите его на gachi.gay и вставьте ссылку в текст ответа. Если вам нужно прикрепить код, вы можете вставить его в качестве файла, через Telegram, экранировав его тремя символами \"`\", или загрузив на pastebin.com.\n\n"
                              f"📌 <b>Название задачи</b>: {task_title}\n"
-                             f"📘 <b>Урок</b>: {lesson_title}\n"
                              f"🔖 <b>Статус</b>: {task_status}\n"
                              f"{deadline_info}\n"
                              f"📝 <b>Текст задачи</b>: {task_description if task_description else 'Нет текста задачи'}")
@@ -284,8 +296,85 @@ def mm_send_final_2(message, lesson_id, course_id, task_id, user_id):
     sql_return.new_student_answer(task_id, user_id, answer_text)
     bot.send_message(message.chat.id, "Решение отправлено на проверку")
 
-def mm_check(call):
-    pass
+def mm_check(call, page=0):
+    user = sql_return.find_user_id(call.from_user.id)
+
+    if not user:
+        bot.send_message(call.message.chat.id, "Вы не зарегистрированы.")
+        return
+
+    is_admin = (user[3] == "approved" and str(call.from_user.id) == config["admin_id"])
+
+    all_courses = sql_return.all_courses()
+
+    developer_courses = []
+    
+    for course in all_courses:
+        student_ids = course[3] if course[3] else ""
+        developer_ids = course[4] if course[4] else ""
+        
+        if str(call.from_user.id) in developer_ids.split():
+            developer_courses.append(course)
+
+    filtered_courses = developer_courses
+
+    courses_per_page = 5
+    total_pages = (len(filtered_courses) + courses_per_page - 1) // courses_per_page
+    page_courses = filtered_courses[page * courses_per_page:(page + 1) * courses_per_page]
+
+    markup = types.InlineKeyboardMarkup()
+    if page == 0:
+        markup.add(types.InlineKeyboardButton(f"🗂 Все решения", callback_data=f'check-course-all_'))
+    for course in page_courses:
+        markup.add(types.InlineKeyboardButton(f"👨‍🏫 {course[1]}", callback_data=f'check-course_{course[0]}'))
+
+    navigation = []
+    if page > 0:
+        navigation.append(types.InlineKeyboardButton("⬅️ Назад", callback_data=f'mm_check_{page - 1}'))
+    if page < total_pages - 1:
+        navigation.append(types.InlineKeyboardButton("➡️ Вперед", callback_data=f'mm_check_{page + 1}'))
+
+    markup.row(*navigation)
+    markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
+    bot.edit_message_text(f"Выберите курс для принятия задания\nСтраница {page + 1} из {total_pages}:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+
+def check_all(call):
+    task_data = sql_return.last_student_answer_all(call.from_user.id)
+    check_task(type=f"check-course-all_", call=call, task_data=task_data)
+
+def check_course(call, course_id):
+    task_data = sql_return.last_student_answer_course(course_id)
+    check_task(type=f"check-course_{course_id}", call=call, task_data=task_data)
+
+def check_task(type: str, call, task_data, comment: str = "None"):
+    print(task_data)
+    markup = types.InlineKeyboardMarkup()
+    if task_data == None:
+        markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data=type))
+        bot.edit_message_text(f"У вас нет непроверенных решений в этом разделе", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+        return
+    v = []
+    if not isinstance(task_data, dict):
+        v.append(types.InlineKeyboardButton("✅ Принять", callback_data=f"check-final_accept_{task_data[0]}_{comment}"))
+        v.append(types.InlineKeyboardButton("❌ Отклонить", callback_data=f"check-final_reject_{task_data[0]}_{comment}"))
+        print(f"check-final_reject_{task_data[0]}_{comment}")
+        markup.row(*v)
+        task_data_2 = sql_return.get_task_from_id(task_data[1])
+        lesson_data = sql_return.get_lesson_from_id(task_data_2[1])
+        text = f"<b>Решение</b>:\n<b>Отправил</b> {sql_return.get_user_name(task_data[2])[0]} {sql_return.get_user_name(task_data[2])[1]}\n<b>Задача</b>: {lesson_data[2]}\n<b>Решение</b>:\n{task_data[3]}\n<b>Комментарий к вердикту</b>: {comment}"
+    else:
+        v.append(types.InlineKeyboardButton("✅ Принять", callback_data=f"check-final_accept_{task_data['answer_id']}_{comment}"))
+        v.append(types.InlineKeyboardButton("❌ Отклонить", callback_data=f"check-final_reject_{task_data['answer_id']}_{comment}"))
+        markup.row(*v)
+        markup.add(types.InlineKeyboardButton("✍️ Добавить комментарий", callback_data=f"check-add-comment_{type}_{task_data['answer_id']}_{comment}"))
+        task_data_2 = sql_return.get_task_from_id(task_data["task_id"])
+        lesson_data = sql_return.get_lesson_from_id(task_data_2[1])
+        text = f"<b>Решение</b>:\n<b>Отправил</b> {sql_return.get_user_name(task_data['student_id'])[0]} {sql_return.get_user_name(task_data['student_id'])[1]}/n<b>Задача</b>: {lesson_data[2]}\n<b>Решение</b>:\n{task_data['answer_text']}\n<b>Комментарий к вердикту</b>: {comment}"
+    bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML")
+    
+def check_add_comment(message, call, type: str, task_id: int):
+    comment = message.text
+    check_task(type, call, sql_return.get_student_answer_from_id(task_id), comment)
 
 def mm_courses(call, page=0):
     user = sql_return.find_user_id(call.from_user.id)
@@ -294,7 +383,7 @@ def mm_courses(call, page=0):
         bot.send_message(call.message.chat.id, "Вы не зарегистрированы.")
         return
 
-    is_admin = (user[3] == "approved" and str(call.from_user.id) == config["admin_id"])
+    is_admin = (user[3] == "approved" and str(call.from_user.id) == str(config["admin_id"]))
 
     all_courses = sql_return.all_courses()
 
@@ -524,10 +613,10 @@ def lesson_content(call, course_id, lesson_id, page=0):
         pass
 
 def task_info(call, task_id, lesson_id, course_id):
-    task = sql_return.task_info(task_id, lesson_id)
+    task = sql_return.task_info(task_id)
     
     if task:
-        task_title, task_status, task_deadline, task_description, lesson_title = task
+        task_id, lesson_id, task_title, task_status, task_deadline, task_description = task
 
         status_translation = {
             'open': 'Открыт',
@@ -555,7 +644,6 @@ def task_info(call, task_id, lesson_id, course_id):
             deadline_info = "⏰ <b>Дедлайн</b>: Не указан"
 
         task_info_message = (f"📌 <b>Название задачи</b>: {task_title}\n"
-                             f"📘 <b>Урок</b>: {lesson_title}\n"
                              f"🔖 <b>Статус</b>: {task_status}\n"
                              f"{deadline_info}\n"
                              f"📝 <b>Текст задачи</b>: {task_description if task_description else 'Нет текста задачи'}")
