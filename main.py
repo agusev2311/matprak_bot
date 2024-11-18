@@ -122,6 +122,8 @@ def handle_query(call):
         check_final(call, int(call.data.split("_")[-2]), call.data.split("_")[-3], call.data.split("_")[-1])
         # "check-final_accept_{task_data[0]}_{comment}"
         # "check-final_reject_{task_data[0]}_{comment}"
+    elif call.data.startswith("create_course"):
+        create_course(call)
     else:
         bot.answer_callback_query(call.id, "Обработчика для этой кнопки не существует.")
     
@@ -445,6 +447,8 @@ def mm_courses(call, page=0):
         navigation.append(types.InlineKeyboardButton("➡️ Вперед", callback_data=f'mm_courses_{page + 1}'))
 
     markup.row(*navigation)
+    if page == 0:
+        markup.add(types.InlineKeyboardButton("➕ Создать курс", callback_data="create_course"))
     markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
 
     bot.edit_message_text(f"{description}\nСтраница {page + 1} из {total_pages}:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
@@ -668,73 +672,72 @@ def task_info(call, task_id, lesson_id, course_id):
                               chat_id=call.message.chat.id, 
                               message_id=call.message.message_id)
 
-cre_courses = dict([])
-
 @bot.message_handler(commands=["create_course"])
-def create_course(message):
-    bot.reply_to(message, f"""Вы начали создание курса. Чтобы его отменить напишите на любом этапе "stop".
-Для начала введите имена всех людей, которых вы хотите добавить в разработчиков курса.
-Для этого нужно ввести их id. Чтобы найти id человека перешлите боту @userinfobot любое сообщение этого человека.
-Указывайте id через пробел (пример: "1234567 7654321 9876")
-Если вы не хотите никого указывать отправьте "none"
-Если вы успешно создадите курс, то он навсегда останется в базе данных бота, даже если вы его удалите.""")
-    bot.register_next_step_handler(message, create_course_users)
+def create_course(call):
+    bot.edit_message_text(f"""🎓 Вы создаёте курс.
+                          
+📋 Информация о курсе:
+👨‍🏫 Создатель курса: {sql_return.get_user_name(call.from_user.id)[0]} {sql_return.get_user_name(call.from_user.id)[1]} ({call.from_user.id})
+📚 Название курса: -
+👥 Разработчики: -
 
-def create_course_users(message):
-    if message.text == "stop":
-        bot.reply_to(message, f"Создание курса отменено")
+✏️ Пожалуйста, введите название курса:""", chat_id=call.message.chat.id, message_id=call.message.message_id)
+    bot.register_next_step_handler(call.message, create_course_name, call.message.message_id)
+
+def create_course_name(message, editing_message_id):
+    name = message.text
+    bot.delete_message(message.chat.id, message.message_id)
+    bot.edit_message_text(f"""🎓 Вы создаёте курс.
+                          
+📋 Информация о курсе: 
+👨‍🏫 Создатель курса: {sql_return.get_user_name(message.from_user.id)[0]} {sql_return.get_user_name(message.from_user.id)[1]} ({message.from_user.id})
+📚 Название курса: {name}
+👥 Разработчики: -
+
+✏️ Пожалуйста, введите id разработчиков через пробел (для отмены введите "cancel" или "none" для отсутствия разработчиков):""", chat_id=message.chat.id, message_id=editing_message_id)
+    bot.register_next_step_handler(message, create_course_developers, editing_message_id, name)
+
+def create_course_developers(message, editing_message_id, course_name):
+    developers = message.text.split()
+    bot.delete_message(message.chat.id, message.message_id)
+
+    if message.text.lower() == "cancel":
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
+        bot.edit_message_text("❌ Создание курса отменено", chat_id=message.chat.id, message_id=editing_message_id, reply_markup=markup)
         return
-    elif message.text != "none":
-        users_id = [str(message.from_user.id)].append(message.text.split())
+    
+    if message.text.lower() == "none":
+        sql_return.create_course(course_name, message.from_user.id, str(message.from_user.id))
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
+        bot.edit_message_text(f"""✅ Курс "{course_name}" успешно создан!""", chat_id=message.chat.id, message_id=editing_message_id, reply_markup=markup)
+        return
+        
+    try:
+        developers = [int(dev_id) for dev_id in developers]
+    except ValueError:
+        bot.edit_message_text("""🎓 Вы создаёте курс.
+                          
+📋 Информация о курсе: 
+👨‍🏫 Создатель курса: {sql_return.get_user_name(message.from_user.id)[0]} {sql_return.get_user_name(message.from_user.id)[1]} ({message.from_user.id})
+📚 Название курса: {course_name}
+👥 Разработчики: -
 
-        try:            
-            added = ""
-            for i in users_id:
-                int(i)
-
-            conn = sqlite3.connect("users.db", check_same_thread=False)
-            cursor = conn.cursor()
-            
-            for i in users_id:
-                cursor.execute('SELECT COUNT(*) FROM users WHERE user_id = ?', (int(i), ))
-                count = cursor.fetchone()[0]
-                if count == 0:
-                    added += f"{i} не зарегестрирован\n"
-                elif count == 1:
-                    cursor.execute('SELECT * FROM users WHERE user_id = ?', (int(i), ))
-                    user_info = cursor.fetchone()
-                    added += f"{user_info[1]} {user_info[2]} (id: {user_info[0]}, status: {user_info[3]})\n"
-                else:
-                    bot.send_message(config["admin_id"], f"❗️❗️❗️Человек под ID {i} присутствует в таблице пользователей несколько раз! Обратите на это внимание!")
-                    added += f"{i} несколько в таблице. Это не нормально. Мы уже отправили сообщение администратору."
-            
-            conn.close()
-            bot.register_next_step_handler(message, create_course_name)
-            bot.reply_to(message, f"""Вы добавили следующих людей: \n\n{added}\nЕсли вы добавили неправильных людей, напишите stop.\n\nТеперь введите название курса. Например "Матпрак 7С".""")
-            cre_courses[message.from_user.id] = [users_id]
-        except:
-            bot.reply_to(message, f"Вы неправавильно ввели id. Введите их сновы (вы всегда можете написать stop или none)")
-            bot.register_next_step_handler(message, create_course_users)
+❌ Ошибка: ID разработчиков должны быть числами. Пожалуйста, введите ID через пробел (например: 123456789 987654321)""", chat_id=message.chat.id, message_id=editing_message_id)
+        bot.register_next_step_handler(message, create_course_developers, editing_message_id, course_name)
+        return
+    
+    if message.from_user.id not in developers:
+        developers.insert(0, message.from_user.id)
     else:
-        cre_courses[message.from_user.id] = [[message.from_user.id]]
-        bot.reply_to(message, f"""Вы никого не добавили\n\nТеперь введите название курса. Например "Матпрак 7С".""")
-        bot.register_next_step_handler(message, create_course_name)
-
-def create_course_name(message):
-    if message.text == "stop":
-        bot.reply_to(message, f"Создание курса отменено")
-        return
-    
-    cre_cur_name = message.text
-
-    if message.from_user.id not in cre_courses:
-        bot.reply_to(message, f"Ошибка: вы не добавили разработчиков. Пожалуйста, начните создание курса заново.")
-        return
-    
-    sql_return.create_course(cre_cur_name, message.from_user.id, cre_courses)
-    
-    bot.reply_to(message, f"""Курс "{cre_cur_name}" создан и добавлен в базу данных!""")
-    del cre_courses[message.from_user.id]
+        developers.remove(message.from_user.id)
+        developers.insert(0, message.from_user.id)
+        
+    sql_return.create_course(course_name, message.from_user.id, " ".join(map(str, developers)))
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
+    bot.edit_message_text(f"""✅ Курс "{course_name}" успешно создан!""", chat_id=message.chat.id, message_id=editing_message_id, reply_markup=markup)
 
 @bot.message_handler(commands=["support"])
 def support(message):
@@ -745,8 +748,6 @@ def help(message):
     text = """Список всех команд в боте и faq:
 Команды:
 /start - регистрация или главное меню
-
-/create_course - создать курс. Скоро для этой функции появится более удобная оболочка
 
 /support - поддержка
 

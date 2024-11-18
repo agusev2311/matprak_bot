@@ -154,11 +154,11 @@ def try_add_developer_to_course(course_id, new_developer_list):
         cursor.execute("UPDATE courses SET developers=? WHERE course_id=?", (new_developer_list, course_id))
         conn.commit()
 
-def create_course(cre_cur_name: str, user_id: int, cre_courses):
+def create_course(cre_cur_name: str, user_id: int, developers: str):
     with sqlite3.connect(config["db-name"]) as conn:
         cursor = conn.cursor()
         cursor.execute("INSERT INTO courses (course_name, creator_id, developers) VALUES (?, ?, ?)",
-            (cre_cur_name, user_id, " ".join([str(i) for i in cre_courses[user_id][0]])))
+            (cre_cur_name, user_id, developers))
         conn.commit()
 
 def lessons_in_course(course_id: int):
