@@ -672,7 +672,6 @@ def task_info(call, task_id, lesson_id, course_id):
                               chat_id=call.message.chat.id, 
                               message_id=call.message.message_id)
 
-@bot.message_handler(commands=["create_course"])
 def create_course(call):
     bot.edit_message_text(f"""🎓 Вы создаёте курс.
                           
