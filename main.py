@@ -346,18 +346,15 @@ def check_course(call, course_id):
     check_task(type=f"check-course_{course_id}", call=call, task_data=task_data)
 
 def check_task(type: str, call, task_data, comment: str = "None"):
-    print(task_data)
     markup = types.InlineKeyboardMarkup()
     if task_data == None:
         markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="mm_check_0"))
         bot.edit_message_text(f"У вас нет непроверенных решений в этом разделе", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
         return
     v = []
-    print(task_data)
     if not isinstance(task_data, dict):
         v.append(types.InlineKeyboardButton("✅ Принять", callback_data=f"check-final_accept_{task_data[0]}_{comment}"))
         v.append(types.InlineKeyboardButton("❌ Отклонить", callback_data=f"check-final_reject_{task_data[0]}_{comment}"))
-        print(f"check-final_reject_{task_data[0]}_{comment}")
         markup.row(*v)
         task_data_2 = sql_return.get_task_from_id(task_data[1])
         lesson_data = sql_return.get_lesson_from_id(task_data_2[1])
