@@ -364,7 +364,7 @@ def check_task(type: str, call, task_data, comment: str = "None"):
         markup.row(*v)
         task_data_2 = sql_return.get_task_from_id(task_data[1])
         lesson_data = sql_return.get_lesson_from_id(task_data_2[1])
-        text = f"<b>Решение</b>:\n<b>Отправил</b> {sql_return.get_user_name(task_data[2])[0]} {sql_return.get_user_name(task_data[2])[1]}\n<b>Задача</b>: {lesson_data[2]}\n<b>Решение</b>:\n{task_data[3]}\n<b>Комментарий к вердикту</b>: {comment}"
+        text = f"<b>Решение</b>:\n<b>Отправил</b> {sql_return.get_user_name(task_data[2])[0]} {sql_return.get_user_name(task_data[2])[1]}\n<b>Урок</b>: {lesson_data[2]}\n<b>Задача</b>: {task_data_2[2]}\n<b>Решение</b>:\n{task_data[3]}\n<b>Комментарий к вердикту</b>: {comment}"
     else:
         v.append(types.InlineKeyboardButton("✅ Принять", callback_data=f"check-final_accept_{task_data['answer_id']}_{comment}"))
         v.append(types.InlineKeyboardButton("❌ Отклонить", callback_data=f"check-final_reject_{task_data['answer_id']}_{comment}"))
@@ -372,7 +372,7 @@ def check_task(type: str, call, task_data, comment: str = "None"):
         markup.add(types.InlineKeyboardButton("✍️ Добавить комментарий", callback_data=f"check-add-comment_{type}_{task_data['answer_id']}_{comment}"))
         task_data_2 = sql_return.get_task_from_id(task_data["task_id"])
         lesson_data = sql_return.get_lesson_from_id(task_data_2[1])
-        text = f"<b>Решение</b>:\n<b>Отправил</b> {sql_return.get_user_name(task_data['student_id'])[0]} {sql_return.get_user_name(task_data['student_id'])[1]}\n<b>Задача</b>: {lesson_data[2]}\n<b>Решение</b>:\n{task_data['answer_text']}\n<b>Комментарий к вердикту</b>: {comment}"
+        text = f"<b>Решение</b>:\n<b>Отправил</b> {sql_return.get_user_name(task_data['student_id'])[0]} {sql_return.get_user_name(task_data['student_id'])[1]}\n<b>Урок</b>: {lesson_data[2]}\n<b>Задача</b>: {task_data_2[2]}\n<b>Решение</b>:\n{task_data['answer_text']}\n<b>Комментарий к вердикту</b>: {comment}"
     bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML")
     
 def check_add_comment(message, call, type: str, task_id: int):
@@ -588,10 +588,11 @@ def course_content(call, course_id, page=0):
     if page < total_pages - 1:
         navigation.append(types.InlineKeyboardButton("➡️ Вперед", callback_data=f'content_{course_id}_{page + 1}'))
 
-    if (is_admin or sql_return.is_course_dev(call.from_user.id, sql_return.developers_list(course_id))) and page == 0:
-        markup.add(types.InlineKeyboardButton("➕ Добавить урок", callback_data=f'create_lesson_{course_id}'))
-
     markup.row(*navigation)
+
+    if (is_admin or sql_return.is_course_dev(call.from_user.id, sql_return.developers_list(course_id))) and page == 0:
+        markup.add(types.InlineKeyboardButton("➕ Создать урок", callback_data=f'create_lesson_{course_id}'))
+
     markup.add(types.InlineKeyboardButton("🔙 К курсу", callback_data=f"course_{course_id}"))
 
     bot.edit_message_text(f"{description}\nСтраница {page + 1} из {total_pages}:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
@@ -624,7 +625,7 @@ def lesson_content(call, course_id, lesson_id, page=0):
         navigation.append(types.InlineKeyboardButton("➡️ Вперед", callback_data=f'lesson_{course_id}_{lesson_id}_{page + 1}'))
 
     if (is_admin or sql_return.is_course_dev(call.from_user.id, sql_return.developers_list(course_id))) and page == 0:
-        markup.add(types.InlineKeyboardButton("➕ Добавить задачу", callback_data=f'create_task_{lesson_id}_{course_id}'))
+        markup.add(types.InlineKeyboardButton("➕ Создать задачу", callback_data=f'create_task_{lesson_id}_{course_id}'))
 
     markup.row(*navigation)
     markup.add(types.InlineKeyboardButton("🔙 К содержанию курса", callback_data=f"content_{course_id}_0"))
