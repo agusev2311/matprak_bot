@@ -584,9 +584,9 @@ def course_content(call, course_id, page=0):
 
     navigation = []
     if page > 0:
-        navigation.append(types.InlineKeyboardButton("⬅️ Назад", callback_data=f'course_content_{page - 1}'))
+        navigation.append(types.InlineKeyboardButton("⬅️ Назад", callback_data=f'content_{course_id}_{page - 1}'))
     if page < total_pages - 1:
-        navigation.append(types.InlineKeyboardButton("➡️ Вперед", callback_data=f'course_content_{page + 1}'))
+        navigation.append(types.InlineKeyboardButton("➡️ Вперед", callback_data=f'content_{course_id}_{page + 1}'))
 
     if (is_admin or sql_return.is_course_dev(call.from_user.id, sql_return.developers_list(course_id))) and page == 0:
         markup.add(types.InlineKeyboardButton("➕ Добавить урок", callback_data=f'create_lesson_{course_id}'))
