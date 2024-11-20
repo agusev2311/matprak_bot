@@ -115,13 +115,13 @@ def handle_query(call):
     elif call.data.startswith("check-course_"):
         check_course(call, int(call.data.split("_")[-1]))
     elif call.data.startswith("check-add-comment_"):
-        bot.send_message(call.message.chat.id, "Введите комментарий")
-        bot.register_next_step_handler(call.message, check_add_comment, call, call.data.split("_")[-3], int(call.data.split("_")[-2]))
-        # "check-add-comment_{task_data[0]}_{comment}"
+        bot.send_message(call.message.chat.id, "Введите комментарий (для пустого комментария введите \"None\")")
+        bot.register_next_step_handler(call.message, check_add_comment, call, call.data.split("_")[-2], int(call.data.split("_")[-1]))
+        # "check-add-comment_{type}_{task_data[0]}"
     elif call.data.startswith("check-final"):
-        check_final(call, int(call.data.split("_")[-2]), call.data.split("_")[-3], call.data.split("_")[-1])
-        # "check-final_accept_{task_data[0]}_{comment}"
-        # "check-final_reject_{task_data[0]}_{comment}"
+        check_final(call, int(call.data.split("_")[-1]), call.data.split("_")[-2])
+        # "check-final_accept_{task_data[0]"
+        # "check-final_reject_{task_data[0]}"
     elif call.data.startswith("create_course"):
         create_course(call)
     elif call.data.startswith("create_lesson"):
@@ -300,6 +300,8 @@ def mm_send_final_2(message, lesson_id, course_id, task_id, user_id):
         return
     sql_return.new_student_answer(task_id, user_id, answer_text)
     bot.send_message(message.chat.id, "Решение отправлено на проверку")
+    for i in sql_return.developers_list(course_id):
+        bot.send_message(i, f"Поступило новое решение для проверки от {sql_return.get_user_name(user_id)[0]} {sql_return.get_user_name(user_id)[1]}")
 
 def mm_check(call, page=0):
     user = sql_return.find_user_id(call.from_user.id)
@@ -351,6 +353,8 @@ def check_course(call, course_id):
     task_data = sql_return.last_student_answer_course(course_id)
     check_task(type=f"check-course_{course_id}", call=call, task_data=task_data)
 
+comment_for_answer_dict = dict([])
+
 def check_task(type: str, call, task_data, comment: str = "None"):
     markup = types.InlineKeyboardMarkup()
     if task_data == None:
@@ -359,29 +363,35 @@ def check_task(type: str, call, task_data, comment: str = "None"):
         return
     v = []
     if not isinstance(task_data, dict):
-        v.append(types.InlineKeyboardButton("✅ Принять", callback_data=f"check-final_accept_{task_data[0]}_{comment}"))
-        v.append(types.InlineKeyboardButton("❌ Отклонить", callback_data=f"check-final_reject_{task_data[0]}_{comment}"))
+        v.append(types.InlineKeyboardButton("✅ Принять", callback_data=f"check-final_accept_{task_data[0]}"))
+        v.append(types.InlineKeyboardButton("❌ Отклонить", callback_data=f"check-final_reject_{task_data[0]}"))
         markup.row(*v)
         task_data_2 = sql_return.get_task_from_id(task_data[1])
         lesson_data = sql_return.get_lesson_from_id(task_data_2[1])
         text = f"<b>Решение</b>:\n<b>Отправил</b> {sql_return.get_user_name(task_data[2])[0]} {sql_return.get_user_name(task_data[2])[1]}\n<b>Урок</b>: {lesson_data[2]}\n<b>Задача</b>: {task_data_2[2]}\n<b>Решение</b>:\n{task_data[3]}\n<b>Комментарий к вердикту</b>: {comment}"
     else:
-        v.append(types.InlineKeyboardButton("✅ Принять", callback_data=f"check-final_accept_{task_data['answer_id']}_{comment}"))
-        v.append(types.InlineKeyboardButton("❌ Отклонить", callback_data=f"check-final_reject_{task_data['answer_id']}_{comment}"))
+        v.append(types.InlineKeyboardButton("✅ Принять", callback_data=f"check-final_accept_{task_data['answer_id']}"))
+        v.append(types.InlineKeyboardButton("❌ Отклонить", callback_data=f"check-final_reject_{task_data['answer_id']}"))
         markup.row(*v)
-        markup.add(types.InlineKeyboardButton("✍️ Добавить комментарий", callback_data=f"check-add-comment_{type}_{task_data['answer_id']}_{comment}"))
+        markup.add(types.InlineKeyboardButton("✍️ Добавить комментарий", callback_data=f"check-add-comment_{type}_{task_data['answer_id']}"))
         task_data_2 = sql_return.get_task_from_id(task_data["task_id"])
         lesson_data = sql_return.get_lesson_from_id(task_data_2[1])
         text = f"<b>Решение</b>:\n<b>Отправил</b> {sql_return.get_user_name(task_data['student_id'])[0]} {sql_return.get_user_name(task_data['student_id'])[1]}\n<b>Урок</b>: {lesson_data[2]}\n<b>Задача</b>: {task_data_2[2]}\n<b>Решение</b>:\n{task_data['answer_text']}\n<b>Комментарий к вердикту</b>: {comment}"
     bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML")
     
-def check_add_comment(message, call, type: str, task_id: int):
+def check_add_comment(message, call, type: str, task_id):
+    task_data = sql_return.get_student_answer_from_id(task_id)
     comment = message.text
-    if "\n" in comment or " " in comment:
-        bot.send_mesage(message.chat.id, "К сожалению на данный момент из-за технических трудностей комментарий не может содержать пробелы и переносы строк. Вы можете заменить их другими символами. ")
-    check_task(type, call, sql_return.get_student_answer_from_id(task_id), comment)
+    comment_for_answer_dict[message.from_user.id] = comment
+    check_task(type, call, task_data, comment)
 
-def check_final(call, answer_id: int, verdict: str, comment: str = "None"):
+def check_final(call, answer_id: int, verdict: str):
+    try:
+        comment = comment_for_answer_dict[call.from_user.id]
+    except:
+        comment = None
+    if call.from_user.id in comment_for_answer_dict:
+        del comment_for_answer_dict[call.from_user.id]
     if comment == "None":
         comment = None
     sql_return.check_student_answer(verdict, comment, answer_id)
@@ -454,8 +464,10 @@ def mm_courses(call, page=0):
     if page == 0:
         markup.add(types.InlineKeyboardButton("➕ Создать курс", callback_data="create_course"))
     markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
-
-    bot.edit_message_text(f"{description}\nСтраница {page + 1} из {total_pages}:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+    if total_pages > 1:
+        bot.edit_message_text(f"{description}\nСтраница {page + 1} из {total_pages}:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+    else:
+        bot.edit_message_text(f"{description}\nНа данный момент вы не состоите ни в одном из курсов", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
 
 def course_info(call):
     course_id = int(call.data.split('_')[-1])
