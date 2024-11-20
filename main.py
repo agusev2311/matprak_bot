@@ -124,6 +124,10 @@ def handle_query(call):
         # "check-final_reject_{task_data[0]}_{comment}"
     elif call.data.startswith("create_course"):
         create_course(call)
+    elif call.data.startswith("create_lesson"):
+        create_lesson(call)
+    elif call.data.startswith("create_task"):
+        create_task(call)
     else:
         bot.answer_callback_query(call.id, "Обработчика для этой кнопки не существует.")
     
@@ -584,6 +588,9 @@ def course_content(call, course_id, page=0):
     if page < total_pages - 1:
         navigation.append(types.InlineKeyboardButton("➡️ Вперед", callback_data=f'course_content_{page + 1}'))
 
+    if (is_admin or sql_return.is_course_dev(call.from_user.id, sql_return.developers_list(course_id))) and page == 0:
+        markup.add(types.InlineKeyboardButton("➕ Добавить урок", callback_data=f'create_lesson_{course_id}'))
+
     markup.row(*navigation)
     markup.add(types.InlineKeyboardButton("🔙 К курсу", callback_data=f"course_{course_id}"))
 
@@ -615,6 +622,9 @@ def lesson_content(call, course_id, lesson_id, page=0):
         navigation.append(types.InlineKeyboardButton("⬅️ Назад", callback_data=f'lesson_{course_id}_{lesson_id}_{page - 1}'))
     if page < total_pages - 1:
         navigation.append(types.InlineKeyboardButton("➡️ Вперед", callback_data=f'lesson_{course_id}_{lesson_id}_{page + 1}'))
+
+    if (is_admin or sql_return.is_course_dev(call.from_user.id, sql_return.developers_list(course_id))) and page == 0:
+        markup.add(types.InlineKeyboardButton("➕ Добавить задачу", callback_data=f'create_task_{lesson_id}_{course_id}'))
 
     markup.row(*navigation)
     markup.add(types.InlineKeyboardButton("🔙 К содержанию курса", callback_data=f"content_{course_id}_0"))
@@ -737,6 +747,53 @@ def create_course_developers(message, editing_message_id, course_name):
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
     bot.edit_message_text(f"""✅ Курс "{course_name}" успешно создан!""", chat_id=message.chat.id, message_id=editing_message_id, reply_markup=markup)
+
+def create_lesson(call):
+    bot.edit_message_text(f"""🎓 Вы создаёте урок.
+                          
+📋 Информация о уроке:
+📚 Название урока: -
+
+✏️ Пожалуйста, введите название урока:""", chat_id=call.message.chat.id, message_id=call.message.message_id)
+    bot.register_next_step_handler(call.message, create_lesson_name, call.message.message_id, call.data.split('_')[-1])
+
+def create_lesson_name(message, editing_message_id, course_id):
+    name = message.text
+    bot.delete_message(message.chat.id, message.message_id)
+    sql_return.create_lesson(course_id, name)
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🔙 К списку уроков", callback_data=f"content_{course_id}_0"))
+    bot.edit_message_text(f"""✅ Урок "{name}" успешно создан!""", chat_id=message.chat.id, message_id=editing_message_id, reply_markup=markup)
+
+def create_task(call):
+    bot.edit_message_text(f"""🎓 Вы создаёте задачу.
+                          
+📋 Информация о задаче:
+📚 Название задачи: -
+📝 Текст задачи: - 
+
+✏️ Пожалуйста, введите название задачи:""", chat_id=call.message.chat.id, message_id=call.message.message_id)
+    bot.register_next_step_handler(call.message, create_task_name, call.message.message_id, call.data.split('_')[-2], call.data.split('_')[-1])
+
+def create_task_name(message, editing_message_id, lesson_id, course_id):
+    task_name = message.text
+    bot.delete_message(message.chat.id, message.message_id)
+    bot.edit_message_text(f"""🎓 Вы создаёте задачу.
+                          
+📋 Информация о задаче:
+📚 Название задачи: {task_name}
+📝 Текст задачи: - 
+
+✏️ Пожалуйста, введите текст задачи:""", chat_id=message.chat.id, message_id=editing_message_id)
+    bot.register_next_step_handler(message, create_task_description, editing_message_id, lesson_id, course_id, task_name)
+
+def create_task_description(message, editing_message_id, lesson_id, course_id, task_name):
+    task_description = message.text
+    bot.delete_message(message.chat.id, message.message_id)
+    sql_return.create_task(lesson_id, course_id, task_name, task_description)
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🔙 К списку задач", callback_data=f"lesson_{course_id}_{lesson_id}_0"))
+    bot.edit_message_text(f"""✅ Задача "{task_name}" успешно создана!""", chat_id=message.chat.id, message_id=editing_message_id, reply_markup=markup)
 
 @bot.message_handler(commands=["support"])
 def support(message):

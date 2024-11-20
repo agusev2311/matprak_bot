@@ -117,7 +117,7 @@ def find_course_id(course_id):
         cursor.execute("SELECT * FROM courses WHERE course_id=?", (course_id,))
         return cursor.fetchone()
     
-def is_course_dev(user_id, devs_id):
+def is_course_dev(user_id: int, devs_id: str) -> bool:
     with sqlite3.connect(config["db-name"]) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
@@ -288,3 +288,15 @@ def check_student_answer(verdict: str, comment: str | None, student_answer_id: i
         cursor = conn.cursor()
         cursor.execute("UPDATE student_answers SET verdict=? WHERE id=?", (verdict, student_answer_id))
         cursor.execute("UPDATE student_answers SET comment=? WHERE id=?", (comment, student_answer_id))
+
+def create_lesson(course_id: int, name: str):
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO lessons (course_id, title, status) VALUES (?, ?, ?)", (course_id, name, "open"))
+        conn.commit()
+
+def create_task(lesson_id: int, course_id: int, name: str, description: str):
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO tasks (lesson_id, title, status, description) VALUES (?, ?, ?, ?)", (lesson_id, name, "open", description))
+        conn.commit()
