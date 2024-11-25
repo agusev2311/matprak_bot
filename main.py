@@ -824,4 +824,8 @@ def help(message):
 """
     bot.send_message(message.chat.id, text)
 
-bot.polling(none_stop=True)
+try:
+    bot.polling(none_stop=True)
+except Exception as e:
+    sql_return.bug_report(str(e))
+    bot.send_message(config["admin_id"], f"Произошла ошибка: {str(e)}")

@@ -69,6 +69,14 @@ def init_db():
         );
     ''')
 
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS bug_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            message TEXT,
+            time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
     # Verdict:
     # accepted
     # rejected
@@ -299,4 +307,10 @@ def create_task(lesson_id: int, course_id: int, name: str, description: str):
     with sqlite3.connect(config["db-name"]) as conn:
         cursor = conn.cursor()
         cursor.execute("INSERT INTO tasks (lesson_id, title, status, description) VALUES (?, ?, ?, ?)", (lesson_id, name, "open", description))
+        conn.commit()
+
+def bug_report(message: str):
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO bug_reports (message, time) VALUES (?, ?)", (message, str(datetime.datetime.now())))
         conn.commit()
