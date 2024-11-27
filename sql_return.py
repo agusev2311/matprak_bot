@@ -84,6 +84,39 @@ def init_db():
     conn.commit()
     cursor.close()
 
+def init_files_db():
+    conn = sqlite3.connect(config["files-db-name"], check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_id TEXT,
+            type TEXT,
+            file_name TEXT,
+            file_path TEXT,
+            creator_id INTEGER,
+            creation_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    # type:
+    # photo
+    # file
+    conn.commit()
+    cursor.close()
+
+def save_file(file_type: str, file_name: str, file_path: str, creator_id: int):
+    file_id = file_path.split("/")[-1].split(".")[0]
+    with sqlite3.connect(config["files-db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO files (file_id, type, file_name, file_path, creator_id) VALUES (?, ?, ?, ?, ?)", (file_id, file_type, file_name, file_path, creator_id))
+        conn.commit()
+
+def get_file(file_id: str):
+    with sqlite3.connect(config["files-db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM files WHERE file_id=?", (file_id,))
+        return cursor.fetchone()
+
 def lessons_in_class():
     pass
 

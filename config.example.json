@@ -1,5 +1,6 @@
 {
     "tg-token": "token",
     "admin_id": 123456,
-    "db-name": "users.db"
+    "db-name": "users.db",
+    "files-db-name": "files.db"
 }
