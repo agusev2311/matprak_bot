@@ -34,6 +34,8 @@ sql_return.create_task(2, 1, "Example task 6", "Example task description 6")
 sql_return.create_task(2, 1, "Example task 7", "Example task description 7")
 sql_return.create_task(2, 1, "Example task 8", "Example task description 8")
 
+reg_users = [1133611562]
+
 while True:
     with sqlite3.connect(config["db-name"]) as conn:
         cursor = conn.cursor()
@@ -61,4 +63,22 @@ while True:
             if str(user[0]) not in course_students_list and user[0] != 1133611562:
                 sql_return.try_add_student_to_course(1, user[0])
                 print(f"User {user[0]} added to course 1")
+            if (not user[0] in reg_users) and user[0] != 1133611562:
+                reg_users.append(user[0])
+                if len(reg_users) == 2:
+                    sql_return.create_course("Example course", reg_users[1], f"{reg_users[1]}")
+                    sql_return.create_lesson(2, "Example lesson 1")
+                    sql_return.create_lesson(2, "Example lesson 2")
+                    sql_return.create_task(3, 2, "Example task 1", "Example task description 1")
+                    sql_return.create_task(3, 2, "Example task 2", "Example task description 2")
+                    sql_return.create_task(3, 2, "Example task 3", "Example task description 3")
+                    sql_return.create_task(3, 2, "Example task 4", "Example task description 4")
+                    sql_return.create_task(4, 2, "Example task 5", "Example task description 5")
+                    sql_return.create_task(4, 2, "Example task 6", "Example task description 6")
+                    sql_return.create_task(4, 2, "Example task 7", "Example task description 7")
+                    sql_return.create_task(4, 2, "Example task 8", "Example task description 8")
+                    sql_return.try_add_student_to_course(2, reg_users[0])
+                else:
+                    sql_return.try_add_developer_to_course(2, reg_users[-1])
+                
     time.sleep(10)
