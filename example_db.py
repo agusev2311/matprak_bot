@@ -8,7 +8,7 @@ config = json.load(open("config.json"))
 
 print("Do you really want to remove the database? (y/n) (\"a\" to automatically setup)")
 
-if input() == "y" or input() == "a":
+if input() in ["y", "a"]:
     if os.path.exists(config["db-name"]):
         os.remove(config["db-name"])
         print(f"Old database at {config['db-name']} has been removed.")
@@ -48,7 +48,7 @@ while True:
         #         sql_return.set_user_status(user[0], "approved")
         #         print(f"User {user[0]} has been approved.")
 
-        print(users)
+        # print(users)
         
         cursor.execute("SELECT student_id FROM courses WHERE course_id=1")
         course_students = cursor.fetchone()[0]
@@ -57,7 +57,7 @@ while True:
             course_students_list = course_students.split()
         else:
             course_students_list = []
-        print(course_students_list)
+        # print(course_students_list)
 
         for user in users:
             if str(user[0]) not in course_students_list and user[0] != 1133611562:
@@ -81,4 +81,4 @@ while True:
                 else:
                     sql_return.try_add_developer_to_course(2, reg_users[-1])
                 
-    time.sleep(10)
+    time.sleep(3)

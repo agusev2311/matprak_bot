@@ -1,5 +1,6 @@
 config.json
 users.db
+*.db
 __pycache__
 
 files
