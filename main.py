@@ -90,7 +90,7 @@ def handle_query(call):
         elif user and user[3] == "banned":
             bot.edit_message_text("Вы были забанены. Обратитесь к администратору", chat_id=call.message.chat.id, message_id=call.message.message_id)
         else:
-            bot.edit_message_text(f"""Здравcтвуйте! Сейчас вы будете проходить регистрацию. Пожалуйста введите своё <b>имя</b> и <b>фамилию</b> (<u>обязательно в таком порядке</u>)\n\nПример: "Артём Гусев".""", parse_mode="HTML", chat_id=call.message.chat.id, message_id=call.message.message_id)
+            bot.edit_message_text(f"""Здравcтвуйте! Сейчас вы будете проходить регистрацию. Пожалуйста, введите своё <b>имя</b> и <b>фамилию</b> (<u>обязательно в таком порядке</u>)\n\nПример: "Артём Гусев".""", parse_mode="HTML", chat_id=call.message.chat.id, message_id=call.message.message_id)
             bot.register_next_step_handler(call.message, register_name)
     elif call.data.startswith("course_"):
         course_info(call)
@@ -274,7 +274,7 @@ def mm_send_final(call, lesson_id, course_id, task_id):
         else:
             deadline_info = "⏰ <b>Дедлайн</b>: Не указан"
 
-        task_info_message = (f"Вы начали сдачу решения для задачи, приведённой ниже. Если вы хотите отменить это действие, напишите вместо текста решения \"Stop\".\n\nЕсли вам нужно прикрепить файл (включая изображение), загрузите его на gachi.gay и вставьте ссылку в текст ответа. Если вам нужно прикрепить код, вы можете вставить его в качестве файла, через Telegram, экранировав его тремя символами \"`\", или загрузив на pastebin.com.\n\n"
+        task_info_message = (f"Вы начали сдачу решения для задачи, приведённой ниже. Если вы хотите отменить это действие, напишите вместо текста решения \"Stop\"\n\n"
                              f"📌 <b>Название задачи</b>: {task_title}\n"
                              f"🔖 <b>Статус</b>: {task_status}\n"
                              f"{deadline_info}\n"
@@ -824,11 +824,12 @@ def help(message):
 """
     bot.send_message(message.chat.id, text)
 
-try:
-    bot.polling(none_stop=True)
-except Exception as e:
-    sql_return.bug_report(str(e))
+while True:
     try:
-        bot.send_message(config["admin_id"], f"Произошла ошибка: {str(e)}")
-    except:
-        pass
+        bot.polling(none_stop=True)
+    except Exception as e:
+        sql_return.bug_report(str(e))
+        try:
+            bot.send_message(config["admin_id"], f"Произошла ошибка: {str(e)}")
+        except:
+            pass
