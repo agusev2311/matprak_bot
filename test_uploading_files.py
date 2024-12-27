@@ -10,26 +10,43 @@ sql_return.init_files_db()
 
 bot = telebot.TeleBot(config["tg-token"])
 
+@bot.message_handler(content_types=['text'])
+def handle_text(message):
+    bot.reply_to(message, f"Текст сообщения: {message.text}")
+
 @bot.message_handler(content_types=['document', 'photo'])
 def handle_files(message):
-    # Проверяем и создаем директорию 'files', если она не существует
     if not os.path.exists('files'):
         os.makedirs('files')
     
-    file_info = bot.get_file(message.document.file_id if message.content_type == 'document' else message.photo[-1].file_id)
-    downloaded_file = bot.download_file(file_info.file_path)
-    
-    # Получаем расширение файла
-    file_extension = os.path.splitext(file_info.file_path)[1]
-    
-    # Генерируем новое имя файла
-    new_file_name = f'{sql_return.next_name("files")}{file_extension}'
-    save_path = f'files/{new_file_name}'
-    
-    # Сохраняем файл
-    with open(save_path, 'wb') as new_file:
-        new_file.write(downloaded_file)
-    sql_return.save_file(message.content_type, new_file_name, save_path, message.from_user.id)
+    try:
+        file_id = message.document.file_id if message.content_type == 'document' else message.photo[-1].file_id
+        file_info = bot.get_file(file_id)
+        
+        if file_info.file_size > 15 * 1024 * 1024:  # 15 МБ в байтах
+            bot.reply_to(message, "Файл слишком большой. Максимальный размер - 15 МБ.")
+            return
+        
+        downloaded_file = bot.download_file(file_info.file_path)
+        
+        file_extension = os.path.splitext(file_info.file_path)[1]
+        
+        new_file_name = f'{sql_return.next_name("files")}{file_extension}'
+        save_path = f'files/{new_file_name}'
+        
+        with open(save_path, 'wb') as new_file:
+            new_file.write(downloaded_file)
+        sql_return.save_file(message.content_type, new_file_name, save_path, message.from_user.id)
+
+        # print(message)
+        print("New message")
+        bot.reply_to(message, f"Файл сохранен как {new_file_name} (текст сообщения: {message.caption})")
+
+    except telebot.apihelper.ApiTelegramException as e:
+        if "file is too big" in str(e):
+            bot.reply_to(message, "Файл слишком большой для загрузки через Telegram API.")
+        else:
+            bot.reply_to(message, "Произошла ошибка при обработке файла.")
 
 @bot.message_handler(commands=['get_file'])
 def get_file_by_id(message):

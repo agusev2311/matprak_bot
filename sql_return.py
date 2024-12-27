@@ -61,6 +61,7 @@ def init_db():
             task_id INTEGER NOT NULL,
             student_id INTEGER NOT NULL,
             answer_text TEXT,
+            files_id TEXT,
             submission_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             verdict TEXT,           -- Вердикт преподавателя
             comment TEXT,           -- Комментарий к вердикту
@@ -181,6 +182,7 @@ def developers_list(course_id):
     with sqlite3.connect(config["db-name"]) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT developers FROM courses WHERE course_id=?", (course_id,))
+        # print(cursor.fetchone()[0])
         return cursor.fetchone()[0] or ""
 
 def try_add_student_to_course(course_id, new_students_list):
@@ -220,11 +222,11 @@ def task_info(task_id: int):
         cursor.execute('''SELECT * FROM tasks WHERE id = ?''', (task_id, ))
         return cursor.fetchone()
     
-def new_student_answer(task_id: int, student_id: int, answer_text: str):
+def new_student_answer(task_id: int, student_id: int, answer_text: str, files_id: str = None):
     with sqlite3.connect(config["db-name"]) as conn:
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO student_answers (task_id, student_id, answer_text, submission_date, verdict, comment) VALUES (?, ?, ?, ?, ?, ?)",
-                       (task_id, student_id, answer_text, str(datetime.datetime.now()), None, None))  # Здесь кортеж
+        cursor.execute("INSERT INTO student_answers (task_id, student_id, answer_text, submission_date, verdict, comment, files_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                       (task_id, student_id, answer_text, str(datetime.datetime.now()), None, None, files_id))  # Здесь кортеж
         conn.commit()
 
 def next_name(dir: str) -> str:

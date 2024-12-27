@@ -5,6 +5,7 @@ import time
 import datetime
 import sql_return
 import json
+import os
 from dateutil.relativedelta import relativedelta
 
 with open('config.json', 'r') as file:
@@ -12,6 +13,7 @@ with open('config.json', 'r') as file:
 print(config)
 
 sql_return.init_db()
+sql_return.init_files_db()
 
 bot = telebot.TeleBot(config["tg-token"])
 
@@ -293,15 +295,58 @@ def mm_send_final(call, lesson_id, course_id, task_id):
                               message_id=call.message.message_id)
 
 def mm_send_final_2(message, lesson_id, course_id, task_id, user_id):
-    answer_text = message.text
-    # lesson_id, course_id, task_id = new_student_answer_dict[message.from_user.id]
-    if message.text == "Stop":
-        bot.send_message(message.chat.id, "Отменено")
-        return
-    sql_return.new_student_answer(task_id, user_id, answer_text)
-    bot.send_message(message.chat.id, "Решение отправлено на проверку")
-    for i in sql_return.developers_list(course_id):
-        bot.send_message(i, f"Поступило новое решение для проверки от {sql_return.get_user_name(user_id)[0]} {sql_return.get_user_name(user_id)[1]}")
+    print(f"#{user_id}#")
+    if message.content_type == 'text':
+        answer_text = message.text
+        if answer_text == "Stop":
+            bot.send_message(message.chat.id, "Отменено")
+            return
+        sql_return.new_student_answer(task_id, user_id, answer_text)
+        bot.send_message(message.chat.id, "Решение отправлено на проверку")
+        for i in sql_return.developers_list(course_id).split():
+            bot.send_message(i, f"Поступило новое решение для проверки от {sql_return.get_user_name(user_id)[0]} {sql_return.get_user_name(user_id)[1]}")
+    elif message.content_type == 'document' or message.content_type == 'photo':
+        answer_text = message.caption
+        if answer_text == "Stop":
+            bot.send_message(message.chat.id, "Отменено")
+            return
+        if not os.path.exists('files'):
+            os.makedirs('files')
+        try:
+            file_id = message.document.file_id if message.content_type == 'document' else message.photo[-1].file_id
+            file_info = bot.get_file(file_id)
+            
+            if file_info.file_size > 15 * 1024 * 1024:
+                bot.reply_to(message, "Файл слишком большой. Максимальный размер - 15 МБ.")
+                return
+            
+            downloaded_file = bot.download_file(file_info.file_path)
+            
+            file_extension = os.path.splitext(file_info.file_path)[1]
+            
+            new_file_name = f'{sql_return.next_name("files")}{file_extension}'
+            save_path = f'files/{new_file_name}'
+            
+            with open(save_path, 'wb') as new_file:
+                new_file.write(downloaded_file)
+            sql_return.save_file(message.content_type, new_file_name, save_path, message.from_user.id)
+
+            print(message)
+            bot.reply_to(message, f"Файл сохранен как {new_file_name} (текст сообщения: {message.caption})")
+
+            sql_return.new_student_answer(task_id, user_id, answer_text, new_file_name)
+            bot.send_message(message.chat.id, "Решение отправлено на проверку")
+            print(sql_return.developers_list(course_id))
+            for i in sql_return.developers_list(course_id).split():
+                bot.send_message(i, f"Поступило новое решение для проверки от {sql_return.get_user_name(user_id)[0]} {sql_return.get_user_name(user_id)[1]}")
+        except telebot.apihelper.ApiTelegramException as e:
+            if "file is too big" in str(e):
+                bot.reply_to(message, "Файл слишком большой для загрузки через Telegram API.")
+            else:
+                print(e)
+                bot.reply_to(message, "Произошла ошибка при обработке файла.")
+    else:
+        bot.send_message(message.chat.id, "Некорректный тип сообщения")
 
 def mm_check(call, page=0):
     user = sql_return.find_user_id(call.from_user.id)
