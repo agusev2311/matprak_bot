@@ -398,7 +398,9 @@ def mm_check(call, page=0):
 
     markup.row(*navigation)
     markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
-    bot.edit_message_text(f"Выберите курс для принятия задания\nСтраница {page + 1} из {total_pages}:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+    bot.delete_message(call.message.chat.id, call.message.message_id)
+    
+    bot.send_message(call.message.chat.id, f"Выберите курс для принятия задания\nСтраница {page + 1} из {total_pages}:", reply_markup=markup)
 
 def check_all(call):
     task_data = sql_return.last_student_answer_all(call.from_user.id)
@@ -412,28 +414,92 @@ comment_for_answer_dict = dict([])
 
 def check_task(type: str, call, task_data, comment: str = "None"):
     markup = types.InlineKeyboardMarkup()
-    if task_data == None:
+    if task_data is None:
         markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="mm_check_0"))
-        bot.edit_message_text(f"У вас нет непроверенных решений в этом разделе", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+        bot.edit_message_text(
+            "У вас нет непроверенных решений в этом разделе",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=markup
+        )
         return
-    v = []
-    if not isinstance(task_data, dict):
-        v.append(types.InlineKeyboardButton("✅ Принять", callback_data=f"check-final_accept_{task_data[0]}"))
-        v.append(types.InlineKeyboardButton("❌ Отклонить", callback_data=f"check-final_reject_{task_data[0]}"))
-        markup.row(*v)
-        task_data_2 = sql_return.get_task_from_id(task_data[1])
-        lesson_data = sql_return.get_lesson_from_id(task_data_2[1])
-        text = f"<b>Решение</b>:\n<b>Отправил</b> {sql_return.get_user_name(task_data[2])[0]} {sql_return.get_user_name(task_data[2])[1]}\n<b>Урок</b>: {lesson_data[2]}\n<b>Задача</b>: {task_data_2[2]}\n<b>Решение</b>:\n{task_data[3]}\n<b>Комментарий к вердикту</b>: {comment}"
-    else:
-        v.append(types.InlineKeyboardButton("✅ Принять", callback_data=f"check-final_accept_{task_data['answer_id']}"))
-        v.append(types.InlineKeyboardButton("❌ Отклонить", callback_data=f"check-final_reject_{task_data['answer_id']}"))
-        markup.row(*v)
-        markup.add(types.InlineKeyboardButton("✍️ Добавить комментарий", callback_data=f"check-add-comment_{type}_{task_data['answer_id']}"))
+
+    # Create common buttons
+    v = [
+        types.InlineKeyboardButton("✅ Принять", callback_data=f"check-final_accept_{task_data['answer_id'] if isinstance(task_data, dict) else task_data[0]}"),
+        types.InlineKeyboardButton("❌ Отклонить", callback_data=f"check-final_reject_{task_data['answer_id'] if isinstance(task_data, dict) else task_data[0]}")
+    ]
+    markup.row(*v)
+
+    if isinstance(task_data, dict):
+        # Handle dictionary case
+        markup.add(types.InlineKeyboardButton("✍️ Добавить комментарий", 
+                  callback_data=f"check-add-comment_{type}_{task_data['answer_id']}"))
+        
         task_data_2 = sql_return.get_task_from_id(task_data["task_id"])
         lesson_data = sql_return.get_lesson_from_id(task_data_2[1])
-        text = f"<b>Решение</b>:\n<b>Отправил</b> {sql_return.get_user_name(task_data['student_id'])[0]} {sql_return.get_user_name(task_data['student_id'])[1]}\n<b>Урок</b>: {lesson_data[2]}\n<b>Задача</b>: {task_data_2[2]}\n<b>Решение</b>:\n{task_data['answer_text']}\n<b>Комментарий к вердикту</b>: {comment}"
-    bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML")
-    
+        files_id = task_data["files_id"]
+        answer_text = task_data['answer_text']
+        student_name = sql_return.get_user_name(task_data['student_id'])
+    else:
+        # Handle tuple case
+        task_data_2 = sql_return.get_task_from_id(task_data[1])
+        lesson_data = sql_return.get_lesson_from_id(task_data_2[1])
+        files_id = task_data[4] if len(task_data) > 4 else None  # Assuming files_id is at index 4
+        answer_text = task_data[3]
+        student_name = sql_return.get_user_name(task_data[2])
+
+    # Construct message text
+    text = f"""<b>Решение</b>:
+<b>Отправил</b> {student_name[0]} {student_name[1]}
+<b>Урок</b>: {lesson_data[2]}
+<b>Задача</b>: {task_data_2[2]}
+<b>Решение</b>:
+{answer_text}
+<b>Комментарий к вердикту</b>: {comment}"""
+
+    if files_id is None:
+        bot.edit_message_text(
+            text,
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=markup,
+            parse_mode="HTML"
+        )
+    else:
+        # Delete old message
+        bot.delete_message(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id
+        )
+        
+        # Send message with file
+        file_id = files_id.split()[0]
+        file_info = sql_return.get_file(file_id.split(".")[0])
+        file_type = file_info[2]
+        file_name = file_info[3]
+        file_path = file_info[4]
+        
+        if file_type == 'photo':
+            with open(file_path, 'rb') as photo:
+                bot.send_photo(
+                    call.message.chat.id,
+                    photo,
+                    caption=text,
+                    reply_markup=markup,
+                    parse_mode="HTML"
+                )
+        else:
+            with open(file_path, 'rb') as doc:
+                bot.send_document(
+                    call.message.chat.id,
+                    doc,
+                    visible_file_name=file_name,
+                    caption=text,
+                    reply_markup=markup,
+                    parse_mode="HTML"
+                )
+
 def check_add_comment(message, call, type: str, task_id):
     task_data = sql_return.get_student_answer_from_id(task_id)
     comment = message.text

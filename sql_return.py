@@ -282,7 +282,7 @@ def last_student_answer_all(developer_id: int):
 
         # Шаг 2: Найти задания по этим курсам с непроверенными решениями
         query = '''
-            SELECT sa.id, sa.task_id, sa.student_id, sa.answer_text, sa.submission_date
+            SELECT sa.id, sa.task_id, sa.student_id, sa.answer_text, sa.submission_date, sa.files_id
             FROM student_answers sa
             JOIN tasks t ON sa.task_id = t.id
             JOIN lessons l ON t.lesson_id = l.id
@@ -297,13 +297,14 @@ def last_student_answer_all(developer_id: int):
         result = cursor.fetchone()
 
         if result:
-            answer_id, task_id, student_id, answer_text, submission_date = result
+            answer_id, task_id, student_id, answer_text, submission_date, files_id = result
             return {
                 "answer_id": answer_id,
                 "task_id": task_id,
                 "student_id": student_id,
                 "answer_text": answer_text,
-                "submission_date": submission_date
+                "submission_date": submission_date,
+                "files_id": files_id
             }
         else:
             return None
