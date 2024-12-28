@@ -61,6 +61,7 @@ def init_db():
             task_id INTEGER NOT NULL,
             student_id INTEGER NOT NULL,
             answer_text TEXT,
+            files_id TEXT,
             submission_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             verdict TEXT,           -- Вердикт преподавателя
             comment TEXT,           -- Комментарий к вердикту
@@ -83,6 +84,39 @@ def init_db():
     
     conn.commit()
     cursor.close()
+
+def init_files_db():
+    conn = sqlite3.connect(config["files-db-name"], check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_id TEXT,
+            type TEXT,
+            file_name TEXT,
+            file_path TEXT,
+            creator_id INTEGER,
+            creation_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    # type:
+    # photo
+    # file
+    conn.commit()
+    cursor.close()
+
+def save_file(file_type: str, file_name: str, file_path: str, creator_id: int):
+    file_id = file_path.split("/")[-1].split(".")[0]
+    with sqlite3.connect(config["files-db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO files (file_id, type, file_name, file_path, creator_id) VALUES (?, ?, ?, ?, ?)", (file_id, file_type, file_name, file_path, creator_id))
+        conn.commit()
+
+def get_file(file_id: str):
+    with sqlite3.connect(config["files-db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM files WHERE file_id=?", (file_id,))
+        return cursor.fetchone()
 
 def lessons_in_class():
     pass
@@ -148,6 +182,7 @@ def developers_list(course_id):
     with sqlite3.connect(config["db-name"]) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT developers FROM courses WHERE course_id=?", (course_id,))
+        # print(cursor.fetchone()[0])
         return cursor.fetchone()[0] or ""
 
 def try_add_student_to_course(course_id, new_students_list):
@@ -187,11 +222,11 @@ def task_info(task_id: int):
         cursor.execute('''SELECT * FROM tasks WHERE id = ?''', (task_id, ))
         return cursor.fetchone()
     
-def new_student_answer(task_id: int, student_id: int, answer_text: str):
+def new_student_answer(task_id: int, student_id: int, answer_text: str, files_id: str = None):
     with sqlite3.connect(config["db-name"]) as conn:
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO student_answers (task_id, student_id, answer_text, submission_date, verdict, comment) VALUES (?, ?, ?, ?, ?, ?)",
-                       (task_id, student_id, answer_text, str(datetime.datetime.now()), None, None))  # Здесь кортеж
+        cursor.execute("INSERT INTO student_answers (task_id, student_id, answer_text, submission_date, verdict, comment, files_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                       (task_id, student_id, answer_text, str(datetime.datetime.now()), None, None, files_id))  # Здесь кортеж
         conn.commit()
 
 def next_name(dir: str) -> str:
@@ -247,7 +282,7 @@ def last_student_answer_all(developer_id: int):
 
         # Шаг 2: Найти задания по этим курсам с непроверенными решениями
         query = '''
-            SELECT sa.id, sa.task_id, sa.student_id, sa.answer_text, sa.submission_date
+            SELECT sa.id, sa.task_id, sa.student_id, sa.answer_text, sa.submission_date, sa.files_id
             FROM student_answers sa
             JOIN tasks t ON sa.task_id = t.id
             JOIN lessons l ON t.lesson_id = l.id
@@ -262,13 +297,14 @@ def last_student_answer_all(developer_id: int):
         result = cursor.fetchone()
 
         if result:
-            answer_id, task_id, student_id, answer_text, submission_date = result
+            answer_id, task_id, student_id, answer_text, submission_date, files_id = result
             return {
                 "answer_id": answer_id,
                 "task_id": task_id,
                 "student_id": student_id,
                 "answer_text": answer_text,
-                "submission_date": submission_date
+                "submission_date": submission_date,
+                "files_id": files_id
             }
         else:
             return None

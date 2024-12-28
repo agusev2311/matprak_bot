@@ -5,6 +5,7 @@ import time
 import datetime
 import sql_return
 import json
+import os
 from dateutil.relativedelta import relativedelta
 
 with open('config.json', 'r') as file:
@@ -12,6 +13,7 @@ with open('config.json', 'r') as file:
 print(config)
 
 sql_return.init_db()
+sql_return.init_files_db()
 
 bot = telebot.TeleBot(config["tg-token"])
 
@@ -274,7 +276,7 @@ def mm_send_final(call, lesson_id, course_id, task_id):
         else:
             deadline_info = "⏰ <b>Дедлайн</b>: Не указан"
 
-        task_info_message = (f"Вы начали сдачу решения для задачи, приведённой ниже. Если вы хотите отменить это действие, напишите вместо текста решения \"Stop\"\n\n"
+        task_info_message = (f"Вы начали сдачу решения для задачи, приведённой ниже. Если вы хотите отменить это действие, напишите вместо текста решения \"Stop\".\n\nПрикрепить к решению можно максимум 1 файл (документ / изображение). Подробнее - /why_only_one_file\n\n"
                              f"📌 <b>Название задачи</b>: {task_title}\n"
                              f"🔖 <b>Статус</b>: {task_status}\n"
                              f"{deadline_info}\n"
@@ -292,16 +294,69 @@ def mm_send_final(call, lesson_id, course_id, task_id):
                               chat_id=call.message.chat.id, 
                               message_id=call.message.message_id)
 
+last_time_student_answer_dict = {}
+
 def mm_send_final_2(message, lesson_id, course_id, task_id, user_id):
-    answer_text = message.text
-    # lesson_id, course_id, task_id = new_student_answer_dict[message.from_user.id]
-    if message.text == "Stop":
-        bot.send_message(message.chat.id, "Отменено")
-        return
-    sql_return.new_student_answer(task_id, user_id, answer_text)
-    bot.send_message(message.chat.id, "Решение отправлено на проверку")
-    for i in sql_return.developers_list(course_id):
-        bot.send_message(i, f"Поступило новое решение для проверки от {sql_return.get_user_name(user_id)[0]} {sql_return.get_user_name(user_id)[1]}")
+    if user_id not in last_time_student_answer_dict:
+        last_time_student_answer_dict[user_id] = time.time()
+    else:
+        if time.time() - last_time_student_answer_dict[user_id] < 10:
+            return
+        last_time_student_answer_dict[user_id] = time.time()
+    if message.content_type == 'text':
+        answer_text = message.text
+        if "/why_only_one_file" in answer_text:
+            why_only_one_file(message)
+            return
+        if answer_text == "Stop":
+            bot.send_message(message.chat.id, "Отменено")
+            return
+        sql_return.new_student_answer(task_id, user_id, answer_text)
+        bot.send_message(message.chat.id, "Решение отправлено на проверку")
+        for i in sql_return.developers_list(course_id).split():
+            bot.send_message(i, f"Поступило новое решение для проверки от {sql_return.get_user_name(user_id)[0]} {sql_return.get_user_name(user_id)[1]}")
+    elif message.content_type == 'document' or message.content_type == 'photo':
+        answer_text = message.caption
+        if answer_text == "Stop":
+            bot.send_message(message.chat.id, "Отменено")
+            return
+        if not os.path.exists('files'):
+            os.makedirs('files')
+        try:
+            file_id = message.document.file_id if message.content_type == 'document' else message.photo[-1].file_id
+            file_info = bot.get_file(file_id)
+            
+            if file_info.file_size > 15 * 1024 * 1024:
+                bot.reply_to(message, "Файл слишком большой. Максимальный размер - 15 МБ.")
+                return
+            
+            downloaded_file = bot.download_file(file_info.file_path)
+            
+            file_extension = os.path.splitext(file_info.file_path)[1]
+            
+            new_file_name = f'{sql_return.next_name("files")}{file_extension}'
+            save_path = f'files/{new_file_name}'
+            
+            with open(save_path, 'wb') as new_file:
+                new_file.write(downloaded_file)
+            sql_return.save_file(message.content_type, new_file_name, save_path, message.from_user.id)
+
+            # print(message)
+            bot.reply_to(message, f"Файл сохранен как {new_file_name} (текст сообщения: {message.caption})")
+
+            sql_return.new_student_answer(task_id, user_id, answer_text, new_file_name)
+            bot.send_message(message.chat.id, "Решение отправлено на проверку")
+            print(sql_return.developers_list(course_id))
+            for i in sql_return.developers_list(course_id).split():
+                bot.send_message(i, f"Поступило новое решение для проверки от {sql_return.get_user_name(user_id)[0]} {sql_return.get_user_name(user_id)[1]}")
+        except telebot.apihelper.ApiTelegramException as e:
+            if "file is too big" in str(e):
+                bot.reply_to(message, "Файл слишком большой для загрузки через Telegram API.")
+            else:
+                print(e)
+                bot.reply_to(message, "Произошла ошибка при обработке файла.")
+    else:
+        bot.send_message(message.chat.id, "Некорректный тип сообщения")
 
 def mm_check(call, page=0):
     user = sql_return.find_user_id(call.from_user.id)
@@ -343,7 +398,9 @@ def mm_check(call, page=0):
 
     markup.row(*navigation)
     markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
-    bot.edit_message_text(f"Выберите курс для принятия задания\nСтраница {page + 1} из {total_pages}:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+    bot.delete_message(call.message.chat.id, call.message.message_id)
+    
+    bot.send_message(call.message.chat.id, f"Выберите курс для принятия задания\nСтраница {page + 1} из {total_pages}:", reply_markup=markup)
 
 def check_all(call):
     task_data = sql_return.last_student_answer_all(call.from_user.id)
@@ -357,28 +414,92 @@ comment_for_answer_dict = dict([])
 
 def check_task(type: str, call, task_data, comment: str = "None"):
     markup = types.InlineKeyboardMarkup()
-    if task_data == None:
+    if task_data is None:
         markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="mm_check_0"))
-        bot.edit_message_text(f"У вас нет непроверенных решений в этом разделе", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+        bot.edit_message_text(
+            "У вас нет непроверенных решений в этом разделе",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=markup
+        )
         return
-    v = []
-    if not isinstance(task_data, dict):
-        v.append(types.InlineKeyboardButton("✅ Принять", callback_data=f"check-final_accept_{task_data[0]}"))
-        v.append(types.InlineKeyboardButton("❌ Отклонить", callback_data=f"check-final_reject_{task_data[0]}"))
-        markup.row(*v)
-        task_data_2 = sql_return.get_task_from_id(task_data[1])
-        lesson_data = sql_return.get_lesson_from_id(task_data_2[1])
-        text = f"<b>Решение</b>:\n<b>Отправил</b> {sql_return.get_user_name(task_data[2])[0]} {sql_return.get_user_name(task_data[2])[1]}\n<b>Урок</b>: {lesson_data[2]}\n<b>Задача</b>: {task_data_2[2]}\n<b>Решение</b>:\n{task_data[3]}\n<b>Комментарий к вердикту</b>: {comment}"
-    else:
-        v.append(types.InlineKeyboardButton("✅ Принять", callback_data=f"check-final_accept_{task_data['answer_id']}"))
-        v.append(types.InlineKeyboardButton("❌ Отклонить", callback_data=f"check-final_reject_{task_data['answer_id']}"))
-        markup.row(*v)
-        markup.add(types.InlineKeyboardButton("✍️ Добавить комментарий", callback_data=f"check-add-comment_{type}_{task_data['answer_id']}"))
+
+    # Create common buttons
+    v = [
+        types.InlineKeyboardButton("✅ Принять", callback_data=f"check-final_accept_{task_data['answer_id'] if isinstance(task_data, dict) else task_data[0]}"),
+        types.InlineKeyboardButton("❌ Отклонить", callback_data=f"check-final_reject_{task_data['answer_id'] if isinstance(task_data, dict) else task_data[0]}")
+    ]
+    markup.row(*v)
+
+    if isinstance(task_data, dict):
+        # Handle dictionary case
+        markup.add(types.InlineKeyboardButton("✍️ Добавить комментарий", 
+                  callback_data=f"check-add-comment_{type}_{task_data['answer_id']}"))
+        
         task_data_2 = sql_return.get_task_from_id(task_data["task_id"])
         lesson_data = sql_return.get_lesson_from_id(task_data_2[1])
-        text = f"<b>Решение</b>:\n<b>Отправил</b> {sql_return.get_user_name(task_data['student_id'])[0]} {sql_return.get_user_name(task_data['student_id'])[1]}\n<b>Урок</b>: {lesson_data[2]}\n<b>Задача</b>: {task_data_2[2]}\n<b>Решение</b>:\n{task_data['answer_text']}\n<b>Комментарий к вердикту</b>: {comment}"
-    bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML")
-    
+        files_id = task_data["files_id"]
+        answer_text = task_data['answer_text']
+        student_name = sql_return.get_user_name(task_data['student_id'])
+    else:
+        # Handle tuple case
+        task_data_2 = sql_return.get_task_from_id(task_data[1])
+        lesson_data = sql_return.get_lesson_from_id(task_data_2[1])
+        files_id = task_data[4] if len(task_data) > 4 else None  # Assuming files_id is at index 4
+        answer_text = task_data[3]
+        student_name = sql_return.get_user_name(task_data[2])
+
+    # Construct message text
+    text = f"""<b>Решение</b>:
+<b>Отправил</b> {student_name[0]} {student_name[1]}
+<b>Урок</b>: {lesson_data[2]}
+<b>Задача</b>: {task_data_2[2]}
+<b>Решение</b>:
+{answer_text}
+<b>Комментарий к вердикту</b>: {comment}"""
+
+    if files_id is None:
+        bot.edit_message_text(
+            text,
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=markup,
+            parse_mode="HTML"
+        )
+    else:
+        # Delete old message
+        bot.delete_message(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id
+        )
+        
+        # Send message with file
+        file_id = files_id.split()[0]
+        file_info = sql_return.get_file(file_id.split(".")[0])
+        file_type = file_info[2]
+        file_name = file_info[3]
+        file_path = file_info[4]
+        
+        if file_type == 'photo':
+            with open(file_path, 'rb') as photo:
+                bot.send_photo(
+                    call.message.chat.id,
+                    photo,
+                    caption=text,
+                    reply_markup=markup,
+                    parse_mode="HTML"
+                )
+        else:
+            with open(file_path, 'rb') as doc:
+                bot.send_document(
+                    call.message.chat.id,
+                    doc,
+                    visible_file_name=file_name,
+                    caption=text,
+                    reply_markup=markup,
+                    parse_mode="HTML"
+                )
+
 def check_add_comment(message, call, type: str, task_id):
     task_data = sql_return.get_student_answer_from_id(task_id)
     comment = message.text
@@ -823,6 +944,31 @@ def help(message):
 /help - этот список
 """
     bot.send_message(message.chat.id, text)
+
+@bot.message_handler(commands=["why_only_one_file"])
+def why_only_one_file(message):
+    text = """Вы можете прикрепить к решению не более одного файла (документ или изображение).
+
+Это ограничение связано с тем, что:
+
+1. Если к сообщению прикреплено более одного файла, Telegram автоматически разделяет его на текст и файлы.
+
+2. Бот обрабатывает каждый файл как отдельное сообщение, что приводит к ошибкам.
+
+Для устранения этой проблемы потребуется полностью переписать функцию сдачи решений. Мы можем рассмотреть это в будущем, так как сейчас данная проблема не является критичной.
+
+Если вы отправите больше одного файла, бот обработает только первый и откажется принимать решение. Для предотвращения повторной отправки ненужных файлов реализована функция, которая удаляет все ваши сообщения, отправленные менее чем через 10 секунд после предыдущего. Если вы отправляете небольшое количество файлов, это не должно вызвать сложностей.
+
+Если по важной причине вам необходимо прикрепить больше одного файла, обратитесь в техподдержку (aka @agusev2311).
+
+⚠️ Обратите внимание: каждый запрос в техподдержку требует моего времени. Если проблема связана с базой данных (как в данном случае), потребуется остановка работы бота. Если вы будете обращаться в техподдержку без веской причины, например, просто для прикрепления дополнительных файлов к решению, к вам могут быть применены ограничения. Пожалуйста, будьте внимательны, уважайте других пользователей и меня.
+"""
+    bot.send_message(message.chat.id, text)
+
+try:
+    bot.polling(none_stop=True)
+except Exception as e:
+    sql_return.bug_report(str(e))
 
 while True:
     try:
