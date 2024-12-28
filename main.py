@@ -92,7 +92,7 @@ def handle_query(call):
         elif user and user[3] == "banned":
             bot.edit_message_text("Вы были забанены. Обратитесь к администратору", chat_id=call.message.chat.id, message_id=call.message.message_id)
         else:
-            bot.edit_message_text(f"""Здравcтвуйте! Сейчас вы будете проходить регистрацию. Пожалуйста введите своё <b>имя</b> и <b>фамилию</b> (<u>обязательно в таком порядке</u>)\n\nПример: "Артём Гусев".""", parse_mode="HTML", chat_id=call.message.chat.id, message_id=call.message.message_id)
+            bot.edit_message_text(f"""Здравcтвуйте! Сейчас вы будете проходить регистрацию. Пожалуйста, введите своё <b>имя</b> и <b>фамилию</b> (<u>обязательно в таком порядке</u>)\n\nПример: "Артём Гусев".""", parse_mode="HTML", chat_id=call.message.chat.id, message_id=call.message.message_id)
             bot.register_next_step_handler(call.message, register_name)
     elif call.data.startswith("course_"):
         course_info(call)
@@ -969,7 +969,13 @@ try:
     bot.polling(none_stop=True)
 except Exception as e:
     sql_return.bug_report(str(e))
+
+while True:
     try:
-        bot.send_message(config["admin_id"], f"Произошла ошибка: {str(e)}")
-    except:
-        pass
+        bot.polling(none_stop=True)
+    except Exception as e:
+        sql_return.bug_report(str(e))
+        try:
+            bot.send_message(config["admin_id"], f"Произошла ошибка: {str(e)}")
+        except:
+            pass
