@@ -53,6 +53,7 @@ def register_name(message):
         markup.add(button1)
         markup.add(button2, button3)
         bot.send_message(int(config["admin_id"]), f"@{message.from_user.username} ({message.from_user.id}) регистрируется как {name[0]} {name[1]}", reply_markup=markup)
+    sql_return.log_action(message.from_user.id, "register", f"{name[0]} {name[1]}")
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_query(call):
@@ -66,14 +67,17 @@ def handle_query(call):
         sql_return.set_user_status(user_id, "approved")
         bot.send_message(user_id, "Ваша регистрация была одобрена! Введите /start для попадания в главное меню или /help для помощи.")
         bot.delete_message(call.message.chat.id, call.message.message_id)
+        sql_return.log_action(call.from_user.id, "approve_register", f"{user_id}")
     elif call.data.startswith("reg_deny_"):
         sql_return.delete_user(user_id)
         bot.send_message(user_id, "Ваша заявка была отклонена. Вы можете подать её снова.")
         bot.delete_message(call.message.chat.id, call.message.message_id)
+        sql_return.log_action(call.from_user.id, "deny_register", f"{user_id}")
     elif call.data.startswith("reg_ban_"):
         sql_return.set_user_status(user_id, "banned")
         bot.send_message(user_id, "Вы были забанены и не можете подать заявку снова. Рекомендую обратиться к администратору")
         bot.delete_message(call.message.chat.id, call.message.message_id)
+        sql_return.log_action(call.from_user.id, "ban_register", f"{user_id}")
     elif call.data.startswith("mm_send"):
         mm_send(call)
     elif call.data.startswith("mm_check"):
@@ -137,6 +141,8 @@ def handle_query(call):
         create_task(call)
     else:
         bot.answer_callback_query(call.id, "Обработчика для этой кнопки не существует.")
+        bot.send_message(config["admin_id"], f"{call.from_user.id} ({call.from_user.username}; {sql_return.get_user_name(call.from_user.id)[0]} {sql_return.get_user_name(call.from_user.id)[1]}) использовал неизвестную кнопку: {call.data}")
+        sql_return.log_action(call.from_user.id, "unknown_action", f"{call.data}")
     
     bot.answer_callback_query(call.id)
 
@@ -320,6 +326,7 @@ def mm_send_final_2(message, lesson_id, course_id, task_id, user_id):
         bot.send_message(message.chat.id, "Решение отправлено на проверку")
         for i in sql_return.developers_list(course_id).split():
             bot.send_message(i, f"Поступило новое решение для проверки от {sql_return.get_user_name(user_id)[0]} {sql_return.get_user_name(user_id)[1]}")
+        sql_return.log_action(user_id, "send_final", f"{task_id}")
     elif message.content_type == 'document' or message.content_type == 'photo':
         answer_text = message.caption
         if answer_text == "Stop":
@@ -354,6 +361,7 @@ def mm_send_final_2(message, lesson_id, course_id, task_id, user_id):
             print(sql_return.developers_list(course_id))
             for i in sql_return.developers_list(course_id).split():
                 bot.send_message(i, f"Поступило новое решение для проверки от {sql_return.get_user_name(user_id)[0]} {sql_return.get_user_name(user_id)[1]}")
+            sql_return.log_action(user_id, "send_final", f"{task_id}")
         except telebot.apihelper.ApiTelegramException as e:
             if "file is too big" in str(e):
                 bot.reply_to(message, "Файл слишком большой для загрузки через Telegram API.")
@@ -523,6 +531,7 @@ def check_final(call, answer_id: int, verdict: str):
     sql_return.check_student_answer(verdict, comment, answer_id)
     sa_data = sql_return.get_student_answer_from_id(answer_id)
     bot.send_message(sa_data[2], f"Ваше решение проверено!\n\nТекст решения:\n{sa_data[3]}\nВердикт: {verdict}\nКомментарий: {comment}")
+    sql_return.log_action(call.from_user.id, "check_final", f"{answer_id}")
     mm_check(call)
 
 def mm_courses(call, page=0):
@@ -668,8 +677,10 @@ def add_student_to_course(message, course_id):
             new_student_ids = student_ids + f" {student_id}"
             sql_return.try_add_student_to_course(course_id, new_student_ids.strip())
             bot.reply_to(message, f"Ученик {student[1]} {student[2]} добавлен в курс!")
+            sql_return.log_action(message.from_user.id, "add_student", f"{course_id} {student_id}")
         else:
             bot.reply_to(message, "Этот ученик уже находится в курсе.")
+        
     except ValueError:
         bot.reply_to(message, "Неправильный ID. Попробуйте снова.")
 
@@ -692,6 +703,7 @@ def add_developer_to_course(message, course_id):
             new_developer_ids = developer_ids + f" {developer_id}"
             sql_return.try_add_developer_to_course(course_id, new_developer_ids.strip())
             bot.reply_to(message, f"Разработчик {developer[1]} {developer[2]} добавлен в курс!")
+            sql_return.log_action(message.from_user.id, "add_developer", f"{course_id} {developer_id}")
         else:
             bot.reply_to(message, "Этот разработчик уже находится в курсе.")
     except ValueError:
@@ -883,6 +895,7 @@ def create_course_developers(message, editing_message_id, course_name):
         developers.insert(0, message.from_user.id)
         
     sql_return.create_course(course_name, message.from_user.id, " ".join(map(str, developers)))
+    sql_return.log_action(message.from_user.id, "create_course", f"{sql_return.last_course_id()} {course_name} {message.from_user.id} {developers}")
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
     bot.edit_message_text(f"""✅ Курс "{course_name}" успешно создан!""", chat_id=message.chat.id, message_id=editing_message_id, reply_markup=markup)
@@ -900,6 +913,7 @@ def create_lesson_name(message, editing_message_id, course_id):
     name = message.text
     bot.delete_message(message.chat.id, message.message_id)
     sql_return.create_lesson(course_id, name)
+    sql_return.log_action(message.from_user.id, "create_lesson", f"{sql_return.last_lesson_id()} {course_id} {name}")
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("🔙 К списку уроков", callback_data=f"content_{course_id}_0"))
     bot.edit_message_text(f"""✅ Урок "{name}" успешно создан!""", chat_id=message.chat.id, message_id=editing_message_id, reply_markup=markup)
@@ -930,6 +944,7 @@ def create_task_description(message, editing_message_id, lesson_id, course_id, t
     task_description = message.text
     bot.delete_message(message.chat.id, message.message_id)
     sql_return.create_task(lesson_id, course_id, task_name, task_description)
+    sql_return.log_action(message.from_user.id, "create_task", f"{sql_return.last_task_id()} {lesson_id} {course_id} {task_name} {task_description}")
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("🔙 К списку задач", callback_data=f"lesson_{course_id}_{lesson_id}_0"))
     bot.edit_message_text(f"""✅ Задача "{task_name}" успешно создана!""", chat_id=message.chat.id, message_id=editing_message_id, reply_markup=markup)
@@ -976,6 +991,7 @@ def ban(message):
         return
     for user in message.text.split()[1:]:
         sql_return.set_user_status(user, "banned")
+    sql_return.log_action(message.from_user.id, "ban", f"{message.text.split()[1:]}")
     bot.send_message(message.chat.id, "Пользователи забанены")
 
 @bot.message_handler(commands=["unban"])
@@ -984,6 +1000,7 @@ def unban(message):
         return
     for user in message.text.split()[1:]:
         sql_return.set_user_status(user, "approved")
+    sql_return.log_action(message.from_user.id, "unban", f"{message.text.split()[1:]}")
     bot.send_message(message.chat.id, "Пользователи разбанены")
 
 try:

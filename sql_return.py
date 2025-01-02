@@ -78,6 +78,16 @@ def init_db():
         )
     ''')
 
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            executor_id INTEGER,
+            action TEXT,
+            time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            info TEXT
+        )
+    ''')
+
     # Verdict:
     # accepted
     # rejected
@@ -350,3 +360,27 @@ def bug_report(message: str):
         cursor = conn.cursor()
         cursor.execute("INSERT INTO bug_reports (message, time) VALUES (?, ?)", (message, str(datetime.datetime.now())))
         conn.commit()
+
+def log_action(executor_id: int, action: str, info: str):
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO logs (executor_id, action, info) VALUES (?, ?, ?)", (executor_id, action, info))
+        conn.commit()
+
+def last_course_id():
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT course_id FROM courses ORDER BY course_id DESC LIMIT 1")
+        return cursor.fetchone()[0]
+
+def last_lesson_id():
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM lessons ORDER BY id DESC LIMIT 1")
+        return cursor.fetchone()[0]
+
+def last_task_id():
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM tasks ORDER BY id DESC LIMIT 1")
+        return cursor.fetchone()[0]
