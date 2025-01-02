@@ -56,6 +56,11 @@ def register_name(message):
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_query(call):
+    user = sql_return.find_user_id(call.from_user.id)
+    if user and user[3] == "banned":
+        bot.answer_callback_query(call.id, "Вы были забанены. Обратитесь к администратору")
+        return
+    
     user_id = call.data.split('_')[-1]
     if call.data.startswith("reg_approve_"):
         sql_return.set_user_status(user_id, "approved")
@@ -964,6 +969,22 @@ def why_only_one_file(message):
 ⚠️ Обратите внимание: каждый запрос в техподдержку требует моего времени. Если проблема связана с базой данных (как в данном случае), потребуется остановка работы бота. Если вы будете обращаться в техподдержку без веской причины, например, просто для прикрепления дополнительных файлов к решению, к вам могут быть применены ограничения. Пожалуйста, будьте внимательны, уважайте других пользователей и меня.
 """
     bot.send_message(message.chat.id, text)
+
+@bot.message_handler(commands=["ban"])
+def ban(message):
+    if message.from_user.id != config["admin_id"]:
+        return
+    for user in message.text.split()[1:]:
+        sql_return.set_user_status(user, "banned")
+    bot.send_message(message.chat.id, "Пользователи забанены")
+
+@bot.message_handler(commands=["unban"])
+def unban(message):
+    if message.from_user.id != config["admin_id"]:
+        return
+    for user in message.text.split()[1:]:
+        sql_return.set_user_status(user, "approved")
+    bot.send_message(message.chat.id, "Пользователи разбанены")
 
 try:
     bot.polling(none_stop=True)
