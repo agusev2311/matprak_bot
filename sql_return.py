@@ -264,7 +264,7 @@ def last_student_answer_course(course_id: int):
     with sqlite3.connect(config["db-name"]) as conn:
         cursor = conn.cursor()
         cursor.execute('''
-            SELECT sa.id, sa.task_id, sa.student_id, sa.answer_text, sa.submission_date, sa.files_id
+            SELECT *
             FROM student_answers sa
             JOIN tasks t ON sa.task_id = t.id
             JOIN lessons l ON t.lesson_id = l.id
@@ -290,9 +290,9 @@ def last_student_answer_all(developer_id: int):
         if not courses:
             return "No courses found for this developer."
 
-        # Шаг 2: Найти задания по этим курсам с непроверенными решениями
+        # Шаг 2: Найти задания по этим курсам с непроверенными решениям
         query = '''
-            SELECT sa.id, sa.task_id, sa.student_id, sa.answer_text, sa.submission_date, sa.files_id
+            SELECT *
             FROM student_answers sa
             JOIN tasks t ON sa.task_id = t.id
             JOIN lessons l ON t.lesson_id = l.id

@@ -459,7 +459,7 @@ def check_task(type: str, call, task_data, comment: str = "None"):
                   callback_data=f"check-add-comment_{type}_{task_data[0]}"))
         task_data_2 = sql_return.get_task_from_id(task_data[1])
         lesson_data = sql_return.get_lesson_from_id(task_data_2[1])
-        files_id = task_data[5] if len(task_data) > 5 else None  # Assuming files_id is at index 4
+        files_id = task_data[4] if len(task_data) > 4 else None  # Assuming files_id is at index 4
         answer_text = task_data[3]
         student_name = sql_return.get_user_name(task_data[2])
 
@@ -472,6 +472,7 @@ def check_task(type: str, call, task_data, comment: str = "None"):
 {answer_text}
 <b>Комментарий к вердикту</b>: {comment}"""
     print(task_data)
+    print(files_id)
     if files_id is None:
         bot.edit_message_text(
             text,
@@ -1004,17 +1005,12 @@ def unban(message):
     sql_return.log_action(message.from_user.id, "unban", f"{message.text.split()[1:]}")
     bot.send_message(message.chat.id, "Пользователи разбанены")
 
-try:
-    bot.polling(none_stop=True)
-except Exception as e:
-    sql_return.bug_report(str(e))
-
 while True:
-    try:
+    # try:
         bot.polling(none_stop=True)
-    except Exception as e:
-        sql_return.bug_report(str(e))
-        try:
-            bot.send_message(config["admin_id"], f"Произошла ошибка: {str(e)}")
-        except:
-            pass
+    # except Exception as e:
+    #     sql_return.bug_report(str(e))
+    #     try:
+    #         bot.send_message(config["admin_id"], f"Произошла ошибка: {str(e)}")
+    #     except:
+    #         pass
