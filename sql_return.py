@@ -83,7 +83,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             executor_id INTEGER,
             action TEXT,
-            time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            time TIMESTAMP DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now', '+3 hours')),
             info TEXT
         )
     ''')
@@ -264,7 +264,7 @@ def last_student_answer_course(course_id: int):
     with sqlite3.connect(config["db-name"]) as conn:
         cursor = conn.cursor()
         cursor.execute('''
-            SELECT sa.id, sa.task_id, sa.student_id, sa.answer_text, sa.submission_date
+            SELECT sa.id, sa.task_id, sa.student_id, sa.answer_text, sa.submission_date, sa.files_id
             FROM student_answers sa
             JOIN tasks t ON sa.task_id = t.id
             JOIN lessons l ON t.lesson_id = l.id

@@ -455,10 +455,11 @@ def check_task(type: str, call, task_data, comment: str = "None"):
         answer_text = task_data['answer_text']
         student_name = sql_return.get_user_name(task_data['student_id'])
     else:
-        # Handle tuple case
+        markup.add(types.InlineKeyboardButton("✍️ Добавить комментарий", 
+                  callback_data=f"check-add-comment_{type}_{task_data[0]}"))
         task_data_2 = sql_return.get_task_from_id(task_data[1])
         lesson_data = sql_return.get_lesson_from_id(task_data_2[1])
-        files_id = task_data[4] if len(task_data) > 4 else None  # Assuming files_id is at index 4
+        files_id = task_data[5] if len(task_data) > 5 else None  # Assuming files_id is at index 4
         answer_text = task_data[3]
         student_name = sql_return.get_user_name(task_data[2])
 
@@ -470,7 +471,7 @@ def check_task(type: str, call, task_data, comment: str = "None"):
 <b>Решение</b>:
 {answer_text}
 <b>Комментарий к вердикту</b>: {comment}"""
-
+    print(task_data)
     if files_id is None:
         bot.edit_message_text(
             text,
