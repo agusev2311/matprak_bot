@@ -97,7 +97,7 @@ def handle_query(call):
             markup.add(button1)
             markup.add(button2)
             markup.add(button3)
-            bot.edit_message_text(f"""Здравствуйте, {call.message.from_user.first_name}!""", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+            bot.edit_message_text(f"""Здравствуйте, {call.from_user.first_name}!""", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
         elif user and user[3] == "banned":
             bot.edit_message_text("Вы были забанены. Обратитесь к администратору", chat_id=call.message.chat.id, message_id=call.message.message_id)
         else:
