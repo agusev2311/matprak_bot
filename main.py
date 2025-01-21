@@ -1012,11 +1012,11 @@ def unban(message):
     bot.send_message(message.chat.id, "Пользователи разбанены")
 
 while True:
-    # try:
+    try:
         bot.polling(none_stop=True)
-    # except Exception as e:
-    #     sql_return.bug_report(str(e))
-    #     try:
-    #         bot.send_message(config["admin_id"], f"Произошла ошибка: {str(e)}")
-    #     except:
-    #         pass
+    except Exception as e:
+        sql_return.bug_report(str(e))
+        try:
+            bot.send_message(config["admin_id"], f"Произошла ошибка: {str(e)}")
+        except:
+            pass
