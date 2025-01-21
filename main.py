@@ -323,7 +323,10 @@ def mm_send_final_2(message, lesson_id, course_id, task_id, user_id):
             bot.send_message(message.chat.id, "Отменено")
             return
         sql_return.new_student_answer(task_id, user_id, answer_text)
-        bot.send_message(message.chat.id, "Решение отправлено на проверку")
+        markup = types.InlineKeyboardMarkup()
+        button1 = types.InlineKeyboardButton("🏠 Главное меню", callback_data=f'mm_main_menu')
+        markup.add(button1)
+        bot.send_message(message.chat.id, "Решение отправлено на проверку", reply_markup=markup)
         for i in sql_return.developers_list(course_id).split():
             bot.send_message(i, f"Поступило новое решение для проверки от {sql_return.get_user_name(user_id)[0]} {sql_return.get_user_name(user_id)[1]}")
         sql_return.log_action(user_id, "send_final", f"{task_id}")
@@ -357,7 +360,10 @@ def mm_send_final_2(message, lesson_id, course_id, task_id, user_id):
             bot.reply_to(message, f"Файл сохранен как {new_file_name} (текст сообщения: {message.caption})")
 
             sql_return.new_student_answer(task_id, user_id, answer_text, new_file_name)
-            bot.send_message(message.chat.id, "Решение отправлено на проверку")
+            markup = types.InlineKeyboardMarkup()
+            button1 = types.InlineKeyboardButton("🏠 Главное меню", callback_data=f'mm_main_menu')
+            markup.add(button1)
+            bot.send_message(message.chat.id, "Решение отправлено на проверку", reply_markup=markup)
             print(sql_return.developers_list(course_id))
             for i in sql_return.developers_list(course_id).split():
                 bot.send_message(i, f"Поступило новое решение для проверки от {sql_return.get_user_name(user_id)[0]} {sql_return.get_user_name(user_id)[1]}")
