@@ -774,7 +774,8 @@ def lesson_content(call, course_id, lesson_id, page=0):
 
     markup = types.InlineKeyboardMarkup()
     for lesson in page_courses:
-        markup.add(types.InlineKeyboardButton(f"{lesson[2]}", callback_data=f'task_{lesson[0]}_{lesson_id}_{course_id}'))
+        verdict = sql_return.task_status_by_user(call.from_user.id, lesson[0])
+        markup.add(types.InlineKeyboardButton(f"{verdict} {lesson[2]}", callback_data=f'task_{lesson[0]}_{lesson_id}_{course_id}'))
 
     navigation = []
     if page > 0:

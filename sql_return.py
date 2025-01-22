@@ -384,3 +384,20 @@ def last_task_id():
         cursor = conn.cursor()
         cursor.execute("SELECT id FROM tasks ORDER BY id DESC LIMIT 1")
         return cursor.fetchone()[0]
+
+def task_status_by_user(user_id: int, task_id: int):
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""SELECT verdict FROM student_answers 
+                        WHERE student_id=? AND task_id=?""", (user_id, task_id))
+        verdicts = cursor.fetchall()
+        verdicts = [i[0] for i in verdicts]
+        print(verdicts)
+        if "accept" in verdicts:
+            return "✅"
+        elif None in verdicts:
+            return "⌛️"
+        elif "reject" in verdicts:
+            return "❌"
+        else:
+            return "⬜️"
