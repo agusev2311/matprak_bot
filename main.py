@@ -4,13 +4,13 @@ import sqlite3
 import time
 import datetime
 import sql_return
+import sorting_123
 import json
 import os
 from dateutil.relativedelta import relativedelta
 
 with open('config.json', 'r') as file:
     config = json.load(file)
-print(config)
 
 sql_return.init_db()
 sql_return.init_files_db()
@@ -356,7 +356,6 @@ def mm_send_final_2(message, lesson_id, course_id, task_id, user_id):
                 new_file.write(downloaded_file)
             sql_return.save_file(message.content_type, new_file_name, save_path, message.from_user.id)
 
-            # print(message)
             bot.reply_to(message, f"Файл сохранен как {new_file_name} (текст сообщения: {message.caption})")
 
             sql_return.new_student_answer(task_id, user_id, answer_text, new_file_name)
@@ -364,7 +363,6 @@ def mm_send_final_2(message, lesson_id, course_id, task_id, user_id):
             button1 = types.InlineKeyboardButton("🏠 Главное меню", callback_data=f'mm_main_menu')
             markup.add(button1)
             bot.send_message(message.chat.id, "Решение отправлено на проверку", reply_markup=markup)
-            print(sql_return.developers_list(course_id))
             for i in sql_return.developers_list(course_id).split():
                 bot.send_message(i, f"Поступило новое решение для проверки от {sql_return.get_user_name(user_id)[0]} {sql_return.get_user_name(user_id)[1]}")
             sql_return.log_action(user_id, "send_final", f"{task_id}")
@@ -372,7 +370,6 @@ def mm_send_final_2(message, lesson_id, course_id, task_id, user_id):
             if "file is too big" in str(e):
                 bot.reply_to(message, "Файл слишком большой для загрузки через Telegram API.")
             else:
-                print(e)
                 bot.reply_to(message, "Произошла ошибка при обработке файла.")
     else:
         bot.send_message(message.chat.id, "Некорректный тип сообщения")
@@ -477,8 +474,6 @@ def check_task(type: str, call, task_data, comment: str = "None"):
 <b>Решение</b>:
 {answer_text}
 <b>Комментарий к вердикту</b>: {comment}"""
-    print(task_data)
-    print(files_id)
     if files_id is None:
         bot.edit_message_text(
             text,
@@ -625,7 +620,7 @@ def course_info(call):
     student_ids = course[3] if course[3] else ""
     developer_ids = course[4] if course[4] else ""
 
-    developers = [str(dev_id) for dev_id in developer_ids.split()]
+    developers = sorting_123.sort([str(dev_id) for dev_id in developer_ids.split()])
     developer_names = []
     for dev_id in developers:
         user = sql_return.get_user_name(int(dev_id))
@@ -634,7 +629,7 @@ def course_info(call):
         else:
             developer_names.append(f"Пользователь с ID {dev_id} не найден")
 
-    students = [str(student_id) for student_id in student_ids.split()]
+    students = sorting_123.sort([str(student_id) for student_id in student_ids.split()])
     student_names = []
     for student_id in students:
         user = sql_return.get_user_name(int(student_id))

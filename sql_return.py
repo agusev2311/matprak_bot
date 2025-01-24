@@ -392,7 +392,6 @@ def task_status_by_user(user_id: int, task_id: int):
                         WHERE student_id=? AND task_id=?""", (user_id, task_id))
         verdicts = cursor.fetchall()
         verdicts = [i[0] for i in verdicts]
-        print(verdicts)
         if "accept" in verdicts:
             return "✅"
         elif None in verdicts:
