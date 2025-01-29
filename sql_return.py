@@ -399,4 +399,4 @@ def task_status_by_user(user_id: int, task_id: int):
         elif "reject" in verdicts:
             return "❌"
         else:
-            return "⬜️"
+            return ""
