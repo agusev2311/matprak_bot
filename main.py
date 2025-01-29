@@ -533,7 +533,17 @@ def check_final(call, answer_id: int, verdict: str):
         comment = None
     sql_return.check_student_answer(verdict, comment, answer_id)
     sa_data = sql_return.get_student_answer_from_id(answer_id)
-    bot.send_message(sa_data[2], f"Ваше решение проверено!\n\nТекст решения:\n{sa_data[3]}\nВердикт: {verdict}\nКомментарий: {comment}")
+    if verdict == "accept":
+        verdict_message = "✅ Вердикт: верно"
+    else:
+        verdict_message = "❌ Вердикт: неверно"
+
+    bot.send_message(sa_data[2], f"""🥳 Ваше решение проверено!
+
+📝 Текст решения:\n{sa_data[3]}
+{verdict_message}
+📜 Комментарий: {comment}""")
+
     sql_return.log_action(call.from_user.id, "check_final", f"{answer_id}")
     mm_check(call)
 
