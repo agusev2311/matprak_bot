@@ -15,6 +15,8 @@ with open('config.json', 'r') as file:
 sql_return.init_db()
 sql_return.init_files_db()
 
+is_polling = True
+
 bot = telebot.TeleBot(config["tg-token"])
 
 @bot.message_handler(commands=["start"])
@@ -1017,7 +1019,19 @@ def unban(message):
     sql_return.log_action(message.from_user.id, "unban", f"{message.text.split()[1:]}")
     bot.send_message(message.chat.id, "Пользователи разбанены")
 
-while True:
+@bot.message_handler(commands=["stop"])
+def stop(message):
+    global is_polling
+    if message.from_user.id == config["admin_id"]:
+        broadcast("❌ Бот временно закрыт на технические работы.")
+        is_polling = False
+        bot.stop_polling()
+
+def broadcast(message: str):
+    for i in sql_return.all_users():
+        bot.send_message(i[0], message)
+
+while is_polling:
     try:
         bot.polling(none_stop=True)
     except Exception as e:

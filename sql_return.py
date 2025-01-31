@@ -400,3 +400,17 @@ def task_status_by_user(user_id: int, task_id: int):
             return "❌"
         else:
             return ""
+
+def get_course_from_lesson_id(lesson_id: int) -> int:
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""SELECT course_id FROM lessons 
+                        WHERE id=?""", (lesson_id, ))
+        course_id = cursor.fetchall()
+        return int(course_id[0][0])
+    
+def all_users() -> list:
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""SELECT user_id FROM users""")
+        return cursor.fetchall()
