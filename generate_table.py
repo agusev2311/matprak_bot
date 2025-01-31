@@ -42,7 +42,7 @@ def generate_lesson_table(db_path, lesson_id, course_id, output_path="table.png"
     
     cell_size = 50
     padding = 10
-    font_size = 20
+    font_size = 25
     font = ImageFont.truetype(font_path, font_size)
     
     max_name_width = max(font.getbbox(f"{student[1]} {student[2]}")[2] for student in students_2) + 10
@@ -65,7 +65,10 @@ def generate_lesson_table(db_path, lesson_id, course_id, output_path="table.png"
             x1, y1 = padding + name_column_width + (j * cell_size), padding + (i + 1) * cell_size
             x2, y2 = x1 + cell_size, y1 + cell_size
             draw.rectangle([x1, y1, x2, y2], fill=color, outline="black")
+            draw.line([0, y1, x2, y2 - 50], fill="black")
+            draw.line([x1, y1 + 50, 0, y2], fill="black")
     
     img.save(output_path)
 
-generate_lesson_table("users.db", lesson_id=int(input()), course_id="3", output_path="lesson_table.png")
+inp = input()
+generate_lesson_table("users.db", lesson_id=int(inp), course_id=f"{sql_return.get_course_from_lesson_id(int(inp))}", output_path="lesson_table.png")
