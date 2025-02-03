@@ -414,3 +414,24 @@ def all_users() -> list:
         cursor = conn.cursor()
         cursor.execute("""SELECT user_id FROM users""")
         return cursor.fetchall()
+
+def count_unchecked_solutions(course_id: int) -> int:
+    conn = sqlite3.connect(config["db-name"])
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT COUNT(*) FROM student_answers
+        WHERE task_id IN (
+            SELECT id FROM tasks
+            WHERE lesson_id IN (
+                SELECT id FROM lessons WHERE course_id = ?
+            )
+        ) AND verdict IS NULL
+    ''', (course_id,))
+    
+    count = cursor.fetchone()[0]
+    
+    cursor.close()
+    conn.close()
+    
+    return count
