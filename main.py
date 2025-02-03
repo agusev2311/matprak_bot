@@ -410,7 +410,7 @@ def mm_check(call, page=0):
 
     markup = types.InlineKeyboardMarkup()
     if page == 0 and total_pages != 0:
-        markup.add(types.InlineKeyboardButton(f"🗂 Все решения ({})", callback_data=f'check-course-all_'))
+        markup.add(types.InlineKeyboardButton(f"🗂 Все решения", callback_data=f'check-course-all_'))
     for course in page_courses:
         markup.add(types.InlineKeyboardButton(f"👨‍🏫 {course[1]} ({sql_return.count_unchecked_solutions(int(course[0]))})", callback_data=f'check-course_{course[0]}'))
 
