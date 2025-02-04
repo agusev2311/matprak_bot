@@ -33,7 +33,7 @@ def start(message):
         markup.add(button1)
         markup.add(button2)
         markup.add(button3)
-        markup.add(button4)
+        # markup.add(button4)
         bot.reply_to(message, f"""Здравствуйте, {message.from_user.first_name}!""", reply_markup=markup)
     elif user and user[3] == "banned":
         bot.reply_to(message, "Вы были забанены. Обратитесь к администратору")
@@ -104,7 +104,7 @@ def handle_query(call):
             markup.add(button1)
             markup.add(button2)
             markup.add(button3)
-            markup.add(button4)
+            # markup.add(button4)
             bot.edit_message_text(f"""Здравствуйте, {call.from_user.first_name}!""", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
         elif user and user[3] == "banned":
             bot.edit_message_text("Вы были забанены. Обратитесь к администратору", chat_id=call.message.chat.id, message_id=call.message.message_id)
