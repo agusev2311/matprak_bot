@@ -1065,7 +1065,10 @@ def stop(message):
 
 def broadcast(message: str):
     for i in sql_return.all_users():
-        bot.send_message(i[0], message)
+        try:
+            bot.send_message(i[0], message)
+        except:
+            pass
 
 while is_polling:
     try:
