@@ -10,11 +10,11 @@ with open('config.json', 'r') as file:
 
 def get_db_connection():
     return psycopg2.connect(
-        dbname=config["db_name"],
-        user=config["db_user"],
-        password=config["db_password"],
-        host=config["db_host"],
-        port=config["db_port"]
+        dbname=config["database"]["dbname"],
+        user=config["database"]["user"],
+        password=config["database"]["password"],
+        host=config["database"]["host"],
+        port=config["database"]["port"]
     )
 
 def init_db():
