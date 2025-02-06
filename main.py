@@ -4,16 +4,18 @@ import sqlite3
 import time
 import datetime
 import sql_return
+import sorting_123
 import json
 import os
 from dateutil.relativedelta import relativedelta
 
 with open('config.json', 'r') as file:
     config = json.load(file)
-print(config)
 
 sql_return.init_db()
 sql_return.init_files_db()
+
+is_polling = True
 
 bot = telebot.TeleBot(config["tg-token"])
 
@@ -27,9 +29,11 @@ def start(message):
         button1 = types.InlineKeyboardButton("✏️ Отправить решение", callback_data=f'mm_send')
         button2 = types.InlineKeyboardButton("🔍 Принять решение", callback_data=f'mm_check_0')
         button3 = types.InlineKeyboardButton("📃 Все курсы", callback_data=f'mm_courses_0')
+        # button4 = types.InlineKeyboardButton("🗂 Все решения", callback_data=f"mm_answers_0")
         markup.add(button1)
         markup.add(button2)
         markup.add(button3)
+        # markup.add(button4)
         bot.reply_to(message, f"""Здравствуйте, {message.from_user.first_name}!""", reply_markup=markup)
     elif user and user[3] == "banned":
         bot.reply_to(message, "Вы были забанены. Обратитесь к администратору")
@@ -84,6 +88,8 @@ def handle_query(call):
         mm_check(call, int(call.data.split("_")[-1]))
     elif call.data.startswith("mm_courses_"):
         mm_courses(call, int(call.data.split('_')[-1]))
+    elif call.data.startswith("mm_answers_"):
+        mm_answers(call, int(call.data.split('_')[-1]))
     elif call.data.startswith("mm_main_menu"):
         user = sql_return.find_user_id(call.from_user.id)
 
@@ -94,9 +100,11 @@ def handle_query(call):
             button1 = types.InlineKeyboardButton("✏️ Отправить решение", callback_data=f'mm_send')
             button2 = types.InlineKeyboardButton("🔍 Принять решение", callback_data=f'mm_check_0')
             button3 = types.InlineKeyboardButton("📃 Все курсы", callback_data=f'mm_courses_0')
+            # button4 = types.InlineKeyboardButton("🗂 Все решения", callback_data=f"mm_answers_0")
             markup.add(button1)
             markup.add(button2)
             markup.add(button3)
+            # markup.add(button4)
             bot.edit_message_text(f"""Здравствуйте, {call.from_user.first_name}!""", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
         elif user and user[3] == "banned":
             bot.edit_message_text("Вы были забанены. Обратитесь к администратору", chat_id=call.message.chat.id, message_id=call.message.message_id)
@@ -356,7 +364,6 @@ def mm_send_final_2(message, lesson_id, course_id, task_id, user_id):
                 new_file.write(downloaded_file)
             sql_return.save_file(message.content_type, new_file_name, save_path, message.from_user.id)
 
-            # print(message)
             bot.reply_to(message, f"Файл сохранен как {new_file_name} (текст сообщения: {message.caption})")
 
             sql_return.new_student_answer(task_id, user_id, answer_text, new_file_name)
@@ -364,7 +371,6 @@ def mm_send_final_2(message, lesson_id, course_id, task_id, user_id):
             button1 = types.InlineKeyboardButton("🏠 Главное меню", callback_data=f'mm_main_menu')
             markup.add(button1)
             bot.send_message(message.chat.id, "Решение отправлено на проверку", reply_markup=markup)
-            print(sql_return.developers_list(course_id))
             for i in sql_return.developers_list(course_id).split():
                 bot.send_message(i, f"Поступило новое решение для проверки от {sql_return.get_user_name(user_id)[0]} {sql_return.get_user_name(user_id)[1]}")
             sql_return.log_action(user_id, "send_final", f"{task_id}")
@@ -372,7 +378,6 @@ def mm_send_final_2(message, lesson_id, course_id, task_id, user_id):
             if "file is too big" in str(e):
                 bot.reply_to(message, "Файл слишком большой для загрузки через Telegram API.")
             else:
-                print(e)
                 bot.reply_to(message, "Произошла ошибка при обработке файла.")
     else:
         bot.send_message(message.chat.id, "Некорректный тип сообщения")
@@ -404,10 +409,10 @@ def mm_check(call, page=0):
     page_courses = filtered_courses[page * courses_per_page:(page + 1) * courses_per_page]
 
     markup = types.InlineKeyboardMarkup()
-    if page == 0:
+    if page == 0 and total_pages != 0:
         markup.add(types.InlineKeyboardButton(f"🗂 Все решения", callback_data=f'check-course-all_'))
     for course in page_courses:
-        markup.add(types.InlineKeyboardButton(f"👨‍🏫 {course[1]}", callback_data=f'check-course_{course[0]}'))
+        markup.add(types.InlineKeyboardButton(f"👨‍🏫 {course[1]} ({sql_return.count_unchecked_solutions(int(course[0]))})", callback_data=f'check-course_{course[0]}'))
 
     navigation = []
     if page > 0:
@@ -420,6 +425,36 @@ def mm_check(call, page=0):
     bot.delete_message(call.message.chat.id, call.message.message_id)
     
     bot.send_message(call.message.chat.id, f"Выберите курс для принятия задания\nСтраница {page + 1} из {total_pages}:", reply_markup=markup)
+
+def mm_answers(call, page=0):
+    solutions = sql_return.get_accessible_solutions(user_id=call.from_user.id)
+    courses_per_page = 5
+    total_pages = (len(solutions) + courses_per_page - 1) // courses_per_page
+    page_courses = solutions[page * courses_per_page:(page + 1) * courses_per_page]
+
+    markup = types.InlineKeyboardMarkup()
+    if page == 0:
+        markup.add(types.InlineKeyboardButton(f"🗂 Все решения", callback_data=f'check-course-all_'))
+    for solution in page_courses:
+        if solution[1] == "admin_access":
+            markup.add(types.InlineKeyboardButton(f"🔑 {solution[0]}", callback_data=f'check-course_{solution[0]}'))
+        elif solution[1] == "teacher_access":
+            markup.add(types.InlineKeyboardButton(f"👨‍🏫 {solution[0]}", callback_data=f'check-course_{solution[0]}'))
+        elif solution[1] == "own_solution":
+            markup.add(types.InlineKeyboardButton(f"👨‍🎓 {solution[0]}", callback_data=f'check-course_{solution[0]}'))
+        else:
+            markup.add(types.InlineKeyboardButton(f"{solution[1]} {solution[0]}", callback_data=f'check-course_{solution[0]}'))
+    navigation = []
+    if page > 0:
+        navigation.append(types.InlineKeyboardButton("⬅️ Назад", callback_data=f'mm_check_{page - 1}'))
+    if page < total_pages - 1:
+        navigation.append(types.InlineKeyboardButton("➡️ Вперед", callback_data=f'mm_check_{page + 1}'))
+
+    markup.row(*navigation)
+    markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
+    bot.delete_message(call.message.chat.id, call.message.message_id)
+    
+    bot.send_message(call.message.chat.id, f"Выберите решение для просмотра\nСтраница {page + 1} из {total_pages}:", reply_markup=markup)
 
 def check_all(call):
     task_data = sql_return.last_student_answer_all(call.from_user.id)
@@ -477,8 +512,6 @@ def check_task(type: str, call, task_data, comment: str = "None"):
 <b>Решение</b>:
 {answer_text}
 <b>Комментарий к вердикту</b>: {comment}"""
-    print(task_data)
-    print(files_id)
     if files_id is None:
         bot.edit_message_text(
             text,
@@ -538,7 +571,17 @@ def check_final(call, answer_id: int, verdict: str):
         comment = None
     sql_return.check_student_answer(verdict, comment, answer_id)
     sa_data = sql_return.get_student_answer_from_id(answer_id)
-    bot.send_message(sa_data[2], f"Ваше решение проверено!\n\nТекст решения:\n{sa_data[3]}\nВердикт: {verdict}\nКомментарий: {comment}")
+    if verdict == "accept":
+        verdict_message = "✅ Вердикт: верно"
+    else:
+        verdict_message = "❌ Вердикт: неверно"
+
+    bot.send_message(sa_data[2], f"""🥳 Ваше решение проверено!
+
+📝 Текст решения:\n{sa_data[3]}
+{verdict_message}
+📜 Комментарий: {comment}""")
+
     sql_return.log_action(call.from_user.id, "check_final", f"{answer_id}")
     mm_check(call)
 
@@ -625,7 +668,7 @@ def course_info(call):
     student_ids = course[3] if course[3] else ""
     developer_ids = course[4] if course[4] else ""
 
-    developers = [str(dev_id) for dev_id in developer_ids.split()]
+    developers = sorting_123.sort([str(dev_id) for dev_id in developer_ids.split()])
     developer_names = []
     for dev_id in developers:
         user = sql_return.get_user_name(int(dev_id))
@@ -634,7 +677,7 @@ def course_info(call):
         else:
             developer_names.append(f"Пользователь с ID {dev_id} не найден")
 
-    students = [str(student_id) for student_id in student_ids.split()]
+    students = sorting_123.sort([str(student_id) for student_id in student_ids.split()])
     student_names = []
     for student_id in students:
         user = sql_return.get_user_name(int(student_id))
@@ -1012,7 +1055,22 @@ def unban(message):
     sql_return.log_action(message.from_user.id, "unban", f"{message.text.split()[1:]}")
     bot.send_message(message.chat.id, "Пользователи разбанены")
 
-while True:
+@bot.message_handler(commands=["stop"])
+def stop(message):
+    global is_polling
+    if message.from_user.id == config["admin_id"]:
+        broadcast("❌ Бот временно закрыт на технические работы.")
+        is_polling = False
+        bot.stop_polling()
+
+def broadcast(message: str):
+    for i in sql_return.all_users():
+        try:
+            bot.send_message(i[0], message)
+        except:
+            pass
+
+while is_polling:
     try:
         bot.polling(none_stop=True)
     except Exception as e:

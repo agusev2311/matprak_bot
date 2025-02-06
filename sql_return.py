@@ -399,3 +399,34 @@ def task_status_by_user(user_id: int, task_id: int):
                 return "❌"
             else:
                 return "⬜️"
+
+def get_course_from_lesson_id(lesson_id: int) -> int:
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT course_id FROM lessons 
+                WHERE id=%s
+            """, (lesson_id,))
+            course_id = cursor.fetchall()
+            return int(course_id[0][0])
+    
+def all_users() -> list:
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""SELECT user_id FROM users""")
+            return cursor.fetchall()
+
+def count_unchecked_solutions(course_id: int) -> int:
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT COUNT(*) FROM student_answers
+                WHERE task_id IN (
+                    SELECT id FROM tasks
+                    WHERE lesson_id IN (
+                        SELECT id FROM lessons WHERE course_id = %s
+                    )
+                ) AND verdict IS NULL
+            """, (course_id,))
+            count = cursor.fetchone()[0]
+            return count
