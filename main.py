@@ -203,7 +203,7 @@ def mm_send_lesson(call, course_id, page=0):
 
     is_admin = str(call.from_user.id) == config["admin_id"]
 
-    lessons = sql_return.lessons_in_course(course_id)
+    lessons = sql_return.lessons_in_course(course_id)[::-1]
 
     # all_courses = sql_return.all_courses()
 
@@ -769,7 +769,7 @@ def course_content(call, course_id, page=0):
 
     is_admin = str(call.from_user.id) == config["admin_id"]
 
-    lessons = sql_return.lessons_in_course(course_id)
+    lessons = sql_return.lessons_in_course(course_id)[::-1]
 
     # all_courses = sql_return.all_courses()
 
