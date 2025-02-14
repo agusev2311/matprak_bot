@@ -176,7 +176,7 @@ def mm_send(call, page=0):
 
     filtered_courses = student_courses
 
-    courses_per_page = 7
+    courses_per_page = 10
     total_pages = (len(filtered_courses) + courses_per_page - 1) // courses_per_page
     page_courses = filtered_courses[page * courses_per_page:(page + 1) * courses_per_page]
 
@@ -213,7 +213,7 @@ def mm_send_lesson(call, course_id, page=0):
 
     lessons = list(reversed(lessons))  # Переворачиваем уроки
 
-    courses_per_page = 7
+    courses_per_page = 10
     total_pages = (len(lessons) + courses_per_page - 1) // courses_per_page
     page_courses = lessons[page * courses_per_page:(page + 1) * courses_per_page]
 
@@ -245,7 +245,7 @@ def mm_send_task(call, course_id, lesson_id, page=0):
 
     tasks = sql_return.tasks_in_lesson(lesson_id)  
 
-    courses_per_page = 7
+    courses_per_page = 10
     total_pages = (len(tasks) + courses_per_page - 1) // courses_per_page
     page_courses = tasks[page * courses_per_page:(page + 1) * courses_per_page]
 
@@ -410,7 +410,7 @@ def mm_check(call, page=0):
 
     filtered_courses = developer_courses
 
-    courses_per_page = 7
+    courses_per_page = 10
     total_pages = (len(filtered_courses) + courses_per_page - 1) // courses_per_page
     page_courses = filtered_courses[page * courses_per_page:(page + 1) * courses_per_page]
 
@@ -434,7 +434,7 @@ def mm_check(call, page=0):
 
 def mm_answers(call, page=0):
     solutions = sql_return.get_accessible_solutions(user_id=call.from_user.id)
-    courses_per_page = 7
+    courses_per_page = 10
     total_pages = (len(solutions) + courses_per_page - 1) // courses_per_page
     page_courses = solutions[page * courses_per_page:(page + 1) * courses_per_page]
 
@@ -619,7 +619,7 @@ def mm_courses(call, page=0):
     else:
         filtered_courses = student_or_developer_courses
 
-    courses_per_page = 7
+    courses_per_page = 10
     total_pages = (len(filtered_courses) + courses_per_page - 1) // courses_per_page
     page_courses = filtered_courses[page * courses_per_page:(page + 1) * courses_per_page]
 
@@ -787,7 +787,7 @@ def course_content(call, course_id, page=0):
 
     # all_courses = sql_return.all_courses()
 
-    courses_per_page = 7
+    courses_per_page = 10
     total_pages = (len(lessons) + courses_per_page - 1) // courses_per_page
     page_courses = lessons[page * courses_per_page:(page + 1) * courses_per_page]
 
@@ -823,7 +823,7 @@ def lesson_content(call, course_id, lesson_id, page=0):
 
     tasks = sql_return.tasks_in_lesson(lesson_id)  
 
-    courses_per_page = 7
+    courses_per_page = 10
     total_pages = (len(tasks) + courses_per_page - 1) // courses_per_page
     page_courses = tasks[page * courses_per_page:(page + 1) * courses_per_page]
 
