@@ -203,9 +203,15 @@ def mm_send_lesson(call, course_id, page=0):
 
     is_admin = str(call.from_user.id) == config["admin_id"]
 
-    lessons = sql_return.lessons_in_course(course_id)[::-1]
+    lessons = sql_return.lessons_in_course(course_id)
 
-    # all_courses = sql_return.all_courses()
+    if not lessons:  # Проверяем, что уроки существуют
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🔙 К курсу", callback_data=f"mm_send"))
+        bot.send_message(call.message.chat.id, "В этом курсе пока нет уроков.", reply_markup=markup)
+        return
+
+    lessons = list(reversed(lessons))  # Переворачиваем уроки
 
     courses_per_page = 5
     total_pages = (len(lessons) + courses_per_page - 1) // courses_per_page
@@ -769,7 +775,15 @@ def course_content(call, course_id, page=0):
 
     is_admin = str(call.from_user.id) == config["admin_id"]
 
-    lessons = sql_return.lessons_in_course(course_id)[::-1]
+    lessons = sql_return.lessons_in_course(course_id)
+
+    if not lessons:  # Проверяем, что уроки существуют
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🔙 К курсу", callback_data=f"course_{course_id}"))
+        bot.send_message(call.message.chat.id, "В этом курсе пока нет уроков.", reply_markup=markup)
+        return
+
+    lessons = list(reversed(lessons))  # Переворачиваем уроки
 
     # all_courses = sql_return.all_courses()
 
