@@ -29,11 +29,11 @@ def start(message):
         button1 = types.InlineKeyboardButton("✏️ Отправить решение", callback_data=f'mm_send')
         button2 = types.InlineKeyboardButton("🔍 Принять решение", callback_data=f'mm_check_0')
         button3 = types.InlineKeyboardButton("📃 Все курсы", callback_data=f'mm_courses_0')
-        # button4 = types.InlineKeyboardButton("🗂 Все решения", callback_data=f"mm_answers_0")
+        button4 = types.InlineKeyboardButton("🗂 Все решения", callback_data=f"mm_answers_0")
         markup.add(button1)
         markup.add(button2)
         markup.add(button3)
-        # markup.add(button4)
+        markup.add(button4)
         bot.reply_to(message, f"""Здравствуйте, {message.from_user.first_name}!""", reply_markup=markup)
     elif user and user[3] == "banned":
         bot.reply_to(message, "Вы были забанены. Обратитесь к администратору")
@@ -90,6 +90,7 @@ def handle_query(call):
         mm_courses(call, int(call.data.split('_')[-1]))
     elif call.data.startswith("mm_answers_"):
         mm_answers(call, int(call.data.split('_')[-1]))
+        # all_solutions(call, int(call.data.split("_")[-1]))
     elif call.data.startswith("mm_main_menu"):
         user = sql_return.find_user_id(call.from_user.id)
 
@@ -100,11 +101,11 @@ def handle_query(call):
             button1 = types.InlineKeyboardButton("✏️ Отправить решение", callback_data=f'mm_send')
             button2 = types.InlineKeyboardButton("🔍 Принять решение", callback_data=f'mm_check_0')
             button3 = types.InlineKeyboardButton("📃 Все курсы", callback_data=f'mm_courses_0')
-            # button4 = types.InlineKeyboardButton("🗂 Все решения", callback_data=f"mm_answers_0")
+            button4 = types.InlineKeyboardButton("🗂 Все решения", callback_data=f"mm_answers_0")
             markup.add(button1)
             markup.add(button2)
             markup.add(button3)
-            # markup.add(button4)
+            markup.add(button4)
             bot.edit_message_text(f"""Здравствуйте, {call.from_user.first_name}!""", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
         elif user and user[3] == "banned":
             bot.edit_message_text("Вы были забанены. Обратитесь к администратору", chat_id=call.message.chat.id, message_id=call.message.message_id)
@@ -147,6 +148,12 @@ def handle_query(call):
         create_lesson(call)
     elif call.data.startswith("create_task"):
         create_task(call)
+    elif call.data.startswith("solution"):
+        solution(call, int(call.data.split("_")[-1]))
+    elif call.data.startswith("self_reject"):
+        self_reject(call, int(call.data.split("_")[-1]))
+    elif call.data.startswith("undo_self_reject"):
+        self_reject(call, int(call.data.split("_")[-1]), True)
     else:
         bot.answer_callback_query(call.id, "Обработчика для этой кнопки не существует.")
         bot.send_message(config["admin_id"], f"{call.from_user.id} ({call.from_user.username}; {sql_return.get_user_name(call.from_user.id)[0]} {sql_return.get_user_name(call.from_user.id)[1]}) использовал неизвестную кнопку: {call.data}")
@@ -434,6 +441,8 @@ def mm_check(call, page=0):
 
 def mm_answers(call, page=0):
     solutions = sql_return.get_accessible_solutions(user_id=call.from_user.id)
+    solutions = list(reversed(solutions))  # Переворачиваем список решений
+
     courses_per_page = 8
     total_pages = (len(solutions) + courses_per_page - 1) // courses_per_page
     page_courses = solutions[page * courses_per_page:(page + 1) * courses_per_page]
@@ -441,26 +450,72 @@ def mm_answers(call, page=0):
     markup = types.InlineKeyboardMarkup()
     if page == 0:
         markup.add(types.InlineKeyboardButton(f"🗂 Все решения", callback_data=f'check-course-all_'))
+
     for solution in page_courses:
-        if solution[1] == "admin_access":
-            markup.add(types.InlineKeyboardButton(f"🔑 {solution[0]}", callback_data=f'check-course_{solution[0]}'))
-        elif solution[1] == "teacher_access":
-            markup.add(types.InlineKeyboardButton(f"👨‍🏫 {solution[0]}", callback_data=f'check-course_{solution[0]}'))
-        elif solution[1] == "own_solution":
-            markup.add(types.InlineKeyboardButton(f"👨‍🎓 {solution[0]}", callback_data=f'check-course_{solution[0]}'))
+        if solution[1] != call.from_user.id:
+            if solution[2] == "accept":
+                markup.add(types.InlineKeyboardButton(f"👨‍🏫✅ {solution[0]}", callback_data=f'solution_{solution[0]}'))
+            elif solution[2] == "reject":
+                markup.add(types.InlineKeyboardButton(f"👨‍🏫❌ {solution[0]}", callback_data=f'solution_{solution[0]}'))
+            elif solution[2] == "self-reject":
+                markup.add(types.InlineKeyboardButton(f"👨‍🏫💔 {solution[0]}", callback_data=f'solution_{solution[0]}'))
+            else:
+                markup.add(types.InlineKeyboardButton(f"👨‍🏫⌛️ {solution[0]}", callback_data=f'solution_{solution[0]}'))
+        elif solution[1] == call.from_user.id:
+            if solution[2] == "accept":
+                markup.add(types.InlineKeyboardButton(f"👨‍🎓✅ {solution[0]}", callback_data=f'solution_{solution[0]}'))
+            elif solution[2] == "reject":
+                markup.add(types.InlineKeyboardButton(f"👨‍🎓❌ {solution[0]}", callback_data=f'solution_{solution[0]}'))
+            elif solution[2] == "self-reject":
+                markup.add(types.InlineKeyboardButton(f"👨‍🎓💔 {solution[0]}", callback_data=f'solution_{solution[0]}'))
+            else:
+                markup.add(types.InlineKeyboardButton(f"👨‍🎓⌛️ {solution[0]}", callback_data=f'solution_{solution[0]}'))
         else:
-            markup.add(types.InlineKeyboardButton(f"{solution[1]} {solution[0]}", callback_data=f'check-course_{solution[0]}'))
+            markup.add(types.InlineKeyboardButton(f"{solution[1]} {solution[0]}", callback_data=f'solution_{solution[0]}'))
+
     navigation = []
     if page > 0:
-        navigation.append(types.InlineKeyboardButton("⬅️ Назад", callback_data=f'mm_check_{page - 1}'))
+        navigation.append(types.InlineKeyboardButton("⬅️ Назад", callback_data=f'mm_answers_{page - 1}'))
     if page < total_pages - 1:
-        navigation.append(types.InlineKeyboardButton("➡️ Вперед", callback_data=f'mm_check_{page + 1}'))
+        navigation.append(types.InlineKeyboardButton("➡️ Вперед", callback_data=f'mm_answers_{page + 1}'))
 
     markup.row(*navigation)
     markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
     bot.delete_message(call.message.chat.id, call.message.message_id)
     
     bot.send_message(call.message.chat.id, f"Выберите решение для просмотра\nСтраница {page + 1} из {total_pages}:", reply_markup=markup)
+
+def solution(call, sol_id):
+    sol = sql_return.get_student_answer_from_id(sol_id)
+    print(sol)
+    verdicts = {"accept": "✅ Принято", "reject": "❌ Отклонено", "self_reject": "💔 Отменено создателем", None: "⌛️ Ожидает проверки"}
+    markup = types.InlineKeyboardMarkup()
+    if sol[2] == call.from_user.id and sol[6] == None:
+        markup.add(types.InlineKeyboardButton("💔 Отменить", callback_data=f"self_reject_{sol[0]}"))
+    if sol[2] == call.from_user.id and sol[6] == "self_reject":
+        markup.add(types.InlineKeyboardButton("❤️‍🩹 Восстановить", callback_data=f"undo_self_reject_{sol[0]}"))
+    markup.add(types.InlineKeyboardButton("🗂 Все решения", callback_data="mm_answers_0"))
+    student_name = sql_return.get_user_name(sol[2])
+    text = f"""Решение:
+Вердикт: {verdicts[sol[6]]}
+Отправил {student_name[0]} {student_name[1]}
+Время отправки: {sol[5]}
+
+(тут есть не вся информация, так как функция тестируется)
+
+Текст решения:
+{sol[3]}
+"""
+    bot.delete_message(call.message.chat.id, call.message.message_id)
+    
+    bot.send_message(call.message.chat.id, text, reply_markup=markup)
+
+def self_reject(call, sol_id, undo=False):
+    if undo:
+        sql_return.undo_self_reject(sol_id)
+    else:
+        sql_return.self_reject(sol_id)
+    solution(call, sol_id)
 
 def check_all(call):
     task_data = sql_return.last_student_answer_all(call.from_user.id)

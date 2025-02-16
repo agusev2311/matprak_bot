@@ -435,3 +435,80 @@ def count_unchecked_solutions(course_id: int) -> int:
     conn.close()
 
     return count
+
+def get_accessible_solutions(user_id, include_students=False, include_self=False, 
+                             include_rejected=False, include_unchecked=False, include_accepted=False):
+    conn = sqlite3.connect(config["db-name"])
+    cursor = conn.cursor()
+    
+    conditions = []
+    params = []
+    
+    if include_students:
+        conditions.append("student_id IN (SELECT user_id FROM users WHERE status = 'student' AND user_id != ?)")
+        params.append(user_id)
+    
+    if include_self:
+        conditions.append("student_id = ?")
+        params.append(user_id)
+    
+    verdict_conditions = []
+    
+    if include_rejected:
+        verdict_conditions.append("verdict = 'rejected'")
+    
+    if include_unchecked:
+        verdict_conditions.append("verdict IS NULL")
+    
+    if include_accepted:
+        verdict_conditions.append("verdict = 'accepted'")
+    
+    if verdict_conditions:
+        conditions.append(f"({' OR '.join(verdict_conditions)})")
+    
+    query = "SELECT id, student_id, verdict, submission_date FROM student_answers"
+    
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+    
+    cursor.execute(query, params)
+    results = cursor.fetchall()
+    
+    cursor.close()
+    conn.close()
+    
+    return results
+
+def self_reject(sol_id: int):
+    conn = sqlite3.connect(config["db-name"])
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        UPDATE student_answers
+        SET verdict = 'self_reject'
+        WHERE id = ?
+    ''', (sol_id,))
+
+    # count = cursor.fetchone()[0]
+
+    conn.commit()
+
+    cursor.close()
+    conn.close()
+
+def undo_self_reject(sol_id: int):
+    conn = sqlite3.connect(config["db-name"])
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        UPDATE student_answers
+        SET verdict = NULL
+        WHERE id = ?
+    ''', (sol_id,))
+
+    # count = cursor.fetchone()[0]
+
+    conn.commit()
+
+    cursor.close()
+    conn.close()
