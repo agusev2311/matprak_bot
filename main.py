@@ -441,7 +441,7 @@ def mm_check(call, page=0):
 
 def mm_answers(call, page=0):
     solutions = sql_return.get_accessible_solutions(user_id=call.from_user.id)
-    solutions = list(reversed(solutions))  # Переворачиваем список решений
+    solutions = list(reversed(solutions))
 
     courses_per_page = 8
     total_pages = (len(solutions) + courses_per_page - 1) // courses_per_page
@@ -450,21 +450,21 @@ def mm_answers(call, page=0):
     markup = types.InlineKeyboardMarkup()
 
     for solution in page_courses:
-        if solution[1] != call.from_user.id:
-            if solution[2] == "accept":
+        if solution[2] != call.from_user.id:
+            if solution[6] == "accept":
                 markup.add(types.InlineKeyboardButton(f"👨‍🏫✅ {solution[0]}", callback_data=f'solution_{solution[0]}'))
-            elif solution[2] == "reject":
+            elif solution[6] == "reject":
                 markup.add(types.InlineKeyboardButton(f"👨‍🏫❌ {solution[0]}", callback_data=f'solution_{solution[0]}'))
-            elif solution[2] == "self_reject":
+            elif solution[6] == "self_reject":
                 markup.add(types.InlineKeyboardButton(f"👨‍🏫💔 {solution[0]}", callback_data=f'solution_{solution[0]}'))
             else:
                 markup.add(types.InlineKeyboardButton(f"👨‍🏫⌛️ {solution[0]}", callback_data=f'solution_{solution[0]}'))
-        elif solution[1] == call.from_user.id:
-            if solution[2] == "accept":
+        elif solution[2] == call.from_user.id:
+            if solution[6] == "accept":
                 markup.add(types.InlineKeyboardButton(f"👨‍🎓✅ {solution[0]}", callback_data=f'solution_{solution[0]}'))
-            elif solution[2] == "reject":
+            elif solution[6] == "reject":
                 markup.add(types.InlineKeyboardButton(f"👨‍🎓❌ {solution[0]}", callback_data=f'solution_{solution[0]}'))
-            elif solution[2] == "self_reject":
+            elif solution[6] == "self_reject":
                 markup.add(types.InlineKeyboardButton(f"👨‍🎓💔 {solution[0]}", callback_data=f'solution_{solution[0]}'))
             else:
                 markup.add(types.InlineKeyboardButton(f"👨‍🎓⌛️ {solution[0]}", callback_data=f'solution_{solution[0]}'))

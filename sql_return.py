@@ -436,71 +436,50 @@ def count_unchecked_solutions(course_id: int) -> int:
 
     return count
 
-def get_accessible_solutions(user_id, include_students=False, include_self=False, 
-                             include_rejected=False, include_unchecked=False, include_accepted=False):
-    conn = sqlite3.connect(config["db-name"])
+import sqlite3
+
+def get_accessible_solutions(user_id):
+    conn = sqlite3.connect(config["db-name"], check_same_thread=False)
     cursor = conn.cursor()
     
-    # Шаг 1: Получаем все курсы, где пользователь является разработчиком
-    cursor.execute('''
-        SELECT course_id FROM courses 
-        WHERE developers LIKE ? 
-    ''', (f'%{user_id}%',))
+    # Получаем ID всех курсов, где пользователь является разработчиком
+    cursor.execute("""
+        SELECT course_id FROM courses
+        WHERE developers LIKE ?
+    """, (f'%{user_id}%',))
     
-    developer_courses = cursor.fetchall()
+    course_ids = [row[0] for row in cursor.fetchall()]
     
-    # Шаг 2: Получаем всех учеников из этих курсов
-    student_ids = set()
-    for course in developer_courses:
-        course_id = course[0]
-        cursor.execute('''
-            SELECT student_id FROM courses 
-            WHERE course_id = ?
-        ''', (course_id,))
-        students = cursor.fetchall()
-        for student in students:
-            student_ids.add(student[0])
+    # Получаем ID всех задач из этих курсов
+    if course_ids:
+        cursor.execute(f"""
+            SELECT tasks.id FROM tasks
+            JOIN lessons ON tasks.lesson_id = lessons.id
+            WHERE lessons.course_id IN ({','.join('?' * len(course_ids))})
+        """, course_ids)
+        task_ids = [row[0] for row in cursor.fetchall()]
+    else:
+        task_ids = []
     
-    # Шаг 3: Формируем список всех решений, которые нужно вернуть
-    conditions = []
-    params = []
+    # Получаем все решения пользователя и его учеников
+    query = """
+        SELECT * FROM student_answers
+        WHERE student_id = ?
+    """
+    params = [user_id]
     
-    if include_students and student_ids:
-        conditions.append("student_id IN ({})".format(','.join(['?'] * len(student_ids))))
-        params.extend(student_ids)
-    
-    if include_self:
-        conditions.append("student_id = ?")
-        params.append(user_id)
-    
-    verdict_conditions = []
-    
-    if include_rejected:
-        verdict_conditions.append("verdict = 'rejected'")
-    
-    if include_unchecked:
-        verdict_conditions.append("verdict IS NULL")
-    
-    if include_accepted:
-        verdict_conditions.append("verdict = 'accepted'")
-    
-    if verdict_conditions:
-        conditions.append(f"({' OR '.join(verdict_conditions)})")
-    
-    query = "SELECT id, student_id, verdict, submission_date FROM student_answers"
-    
-    if conditions:
-        query += " WHERE " + " AND ".join(conditions)
-    
-    query += " ORDER BY id"  # Шаг 5: Сортировка по id решения
+    if task_ids:
+        query += f" OR task_id IN ({','.join('?' * len(task_ids))})"
+        params.extend(task_ids)
     
     cursor.execute(query, params)
-    results = cursor.fetchall()
+    solutions = cursor.fetchall()
     
-    cursor.close()
+    # Сортируем по ID решений
+    solutions.sort(key=lambda x: x[0])
+    
     conn.close()
-    
-    return results
+    return solutions
 
 def self_reject(sol_id: int):
     conn = sqlite3.connect(config["db-name"])
