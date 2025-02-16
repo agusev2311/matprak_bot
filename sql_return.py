@@ -441,12 +441,33 @@ def get_accessible_solutions(user_id, include_students=False, include_self=False
     conn = sqlite3.connect(config["db-name"])
     cursor = conn.cursor()
     
+    # Шаг 1: Получаем все курсы, где пользователь является разработчиком
+    cursor.execute('''
+        SELECT course_id FROM courses 
+        WHERE developers LIKE ? 
+    ''', (f'%{user_id}%',))
+    
+    developer_courses = cursor.fetchall()
+    
+    # Шаг 2: Получаем всех учеников из этих курсов
+    student_ids = set()
+    for course in developer_courses:
+        course_id = course[0]
+        cursor.execute('''
+            SELECT student_id FROM courses 
+            WHERE course_id = ?
+        ''', (course_id,))
+        students = cursor.fetchall()
+        for student in students:
+            student_ids.add(student[0])
+    
+    # Шаг 3: Формируем список всех решений, которые нужно вернуть
     conditions = []
     params = []
     
-    if include_students:
-        conditions.append("student_id IN (SELECT user_id FROM users WHERE status = 'student' AND user_id != ?)")
-        params.append(user_id)
+    if include_students and student_ids:
+        conditions.append("student_id IN ({})".format(','.join(['?'] * len(student_ids))))
+        params.extend(student_ids)
     
     if include_self:
         conditions.append("student_id = ?")
@@ -470,6 +491,8 @@ def get_accessible_solutions(user_id, include_students=False, include_self=False
     
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
+    
+    query += " ORDER BY id"  # Шаг 5: Сортировка по id решения
     
     cursor.execute(query, params)
     results = cursor.fetchall()

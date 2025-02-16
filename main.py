@@ -448,8 +448,6 @@ def mm_answers(call, page=0):
     page_courses = solutions[page * courses_per_page:(page + 1) * courses_per_page]
 
     markup = types.InlineKeyboardMarkup()
-    if page == 0:
-        markup.add(types.InlineKeyboardButton(f"🗂 Все решения", callback_data=f'check-course-all_'))
 
     for solution in page_courses:
         if solution[1] != call.from_user.id:
@@ -457,7 +455,7 @@ def mm_answers(call, page=0):
                 markup.add(types.InlineKeyboardButton(f"👨‍🏫✅ {solution[0]}", callback_data=f'solution_{solution[0]}'))
             elif solution[2] == "reject":
                 markup.add(types.InlineKeyboardButton(f"👨‍🏫❌ {solution[0]}", callback_data=f'solution_{solution[0]}'))
-            elif solution[2] == "self-reject":
+            elif solution[2] == "self_reject":
                 markup.add(types.InlineKeyboardButton(f"👨‍🏫💔 {solution[0]}", callback_data=f'solution_{solution[0]}'))
             else:
                 markup.add(types.InlineKeyboardButton(f"👨‍🏫⌛️ {solution[0]}", callback_data=f'solution_{solution[0]}'))
@@ -466,7 +464,7 @@ def mm_answers(call, page=0):
                 markup.add(types.InlineKeyboardButton(f"👨‍🎓✅ {solution[0]}", callback_data=f'solution_{solution[0]}'))
             elif solution[2] == "reject":
                 markup.add(types.InlineKeyboardButton(f"👨‍🎓❌ {solution[0]}", callback_data=f'solution_{solution[0]}'))
-            elif solution[2] == "self-reject":
+            elif solution[2] == "self_reject":
                 markup.add(types.InlineKeyboardButton(f"👨‍🎓💔 {solution[0]}", callback_data=f'solution_{solution[0]}'))
             else:
                 markup.add(types.InlineKeyboardButton(f"👨‍🎓⌛️ {solution[0]}", callback_data=f'solution_{solution[0]}'))
