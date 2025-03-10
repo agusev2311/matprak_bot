@@ -1141,7 +1141,14 @@ def broadcast(message: str):
 
 def infinite_update():
     while True:
-        prog.update_sheet()
+        try:
+            prog.update_sheet()
+        except Exception as e:
+            try:
+                bot.send_message(config["admin_id"], f"Произошла ошибка в infinite_update: {str(e)}")
+            except:
+                pass
+            sql_return.bug_report(str(e))
         time.sleep(60 * 3)
 
 update_thread = Thread(target=infinite_update)
