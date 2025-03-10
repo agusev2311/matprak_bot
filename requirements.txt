@@ -1,3 +1,6 @@
 pyTelegramBotAPI
 python-dateutil
 openai
+gspread
+gspread_formatting
+oauth2client
