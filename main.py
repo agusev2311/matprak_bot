@@ -8,6 +8,8 @@ import sorting_123
 import json
 import os
 from dateutil.relativedelta import relativedelta
+from threading import Thread
+import prog
 
 with open('config.json', 'r') as file:
     config = json.load(file)
@@ -1136,6 +1138,14 @@ def broadcast(message: str):
             bot.send_message(i[0], message)
         except:
             pass
+
+def infinite_update():
+    while True:
+        prog.update_sheet()
+        time.sleep(60 * 3)
+
+update_thread = Thread(target=infinite_update)
+update_thread.start()
 
 while is_polling:
     try:
