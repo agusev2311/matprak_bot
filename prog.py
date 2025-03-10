@@ -60,27 +60,27 @@ def update_sheet():
     start_solution = 0
     with open("setup.json", "r", encoding="utf-8") as file:
         setup = json.load(file)
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_name("service_account.json", scope)
-    client = gspread.authorize(creds)
-
-    spreadsheet = client.open("Копия Математика Силаэдр 2024-25")
-
-    worksheet = spreadsheet.worksheet("7mp")
-
-    data = worksheet.get_all_values()
-    data_dict = {}
-    for row_idx, row in enumerate(data):
-        for col_idx, value in enumerate(row):
-            col_letter = ""
-            temp_col_idx = col_idx
-            while temp_col_idx >= 0:
-                col_letter = chr(65 + (temp_col_idx % 26)) + col_letter
-                temp_col_idx = temp_col_idx // 26 - 1
-            cell = f"{col_letter}{row_idx + 1}"
-            data_dict[cell] = value
     
     for i in setup.keys():
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = ServiceAccountCredentials.from_json_keyfile_name("service_account.json", scope)
+        client = gspread.authorize(creds)
+
+        spreadsheet = client.open(setup[i]["spreadsheet"])
+
+        worksheet = spreadsheet.worksheet(setup[i]["worksheet"])
+
+        data = worksheet.get_all_values()
+        data_dict = {}
+        for row_idx, row in enumerate(data):
+            for col_idx, value in enumerate(row):
+                col_letter = ""
+                temp_col_idx = col_idx
+                while temp_col_idx >= 0:
+                    col_letter = chr(65 + (temp_col_idx % 26)) + col_letter
+                    temp_col_idx = temp_col_idx // 26 - 1
+                cell = f"{col_letter}{row_idx + 1}"
+                data_dict[cell] = value
         for j in setup[i]["users"].keys():
             if j == "":
                 continue
