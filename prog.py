@@ -66,7 +66,9 @@ def update_sheet():
         creds = ServiceAccountCredentials.from_json_keyfile_name("service_account.json", scope)
         client = gspread.authorize(creds)
 
-        spreadsheet = client.open(setup[i]["spreadsheet"])
+        # spreadsheet = client.open(setup[i]["spreadsheet"])
+        spreadsheet_id = setup[i]["spreadsheet_id"]
+        spreadsheet = client.open_by_key(spreadsheet_id)
 
         worksheet = spreadsheet.worksheet(setup[i]["worksheet"])
 
