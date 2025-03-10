@@ -2,8 +2,12 @@ config.json
 users.db
 *.db
 __pycache__
+venv
 
 files
 files.db
 
 lesson_table.png
+
+service_account.json
+setup.json

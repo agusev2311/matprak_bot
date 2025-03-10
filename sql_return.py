@@ -385,7 +385,7 @@ def last_task_id():
         cursor.execute("SELECT id FROM tasks ORDER BY id DESC LIMIT 1")
         return cursor.fetchone()[0]
 
-def task_status_by_user(user_id: int, task_id: int):
+def task_status_by_user(user_id: int, task_id: int, start_solution: int = 0):
     with sqlite3.connect(config["db-name"]) as conn:
         cursor = conn.cursor()
         cursor.execute("""SELECT verdict FROM student_answers
