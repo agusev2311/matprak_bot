@@ -101,8 +101,5 @@ def update_sheet():
                     elif status == "❌":
                         reset_format = CellFormat(backgroundColor=Color(red=1, green=1, blue=1))
                         format_cell_range(worksheet, f"{setup[i]['tasks'][k]}{setup[i]['users'][j]}", reset_format)
-                if f"{setup[i]['tasks'][k]}{setup[i]['users'][j]}" == "GM14":
-                    print(f"{setup[i]['tasks'][k]}{setup[i]['users'][j]}: {data_dict[f"{setup[i]['tasks'][k]}{setup[i]['users'][j]}"]}, {sql_return.task_status_by_user(int(j), int(k), start_solution)}")
-    
 
 update_sheet()
