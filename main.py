@@ -11,6 +11,8 @@ from dateutil.relativedelta import relativedelta
 from threading import Thread
 import prog
 
+print("main.py started")
+
 with open('config.json', 'r') as file:
     config = json.load(file)
 
@@ -1140,6 +1142,7 @@ def broadcast(message: str):
             pass
 
 def infinite_update():
+    print("infinite_update started")
     while True:
         try:
             prog.update_sheet()
@@ -1155,6 +1158,7 @@ update_thread = Thread(target=infinite_update)
 update_thread.start()
 
 while is_polling:
+    print("polling started")
     try:
         bot.polling(none_stop=True)
     except Exception as e:
@@ -1162,4 +1166,5 @@ while is_polling:
         try:
             bot.send_message(config["admin_id"], f"Произошла ошибка: {str(e)}")
         except:
-            pass
+            print(f"report error")
+        print(f"polling error: {str(e)}")
