@@ -1155,6 +1155,8 @@ def infinite_update():
                 pass
             sql_return.bug_report(str(e))
         time.sleep(60 * 3)
+        if not is_polling:
+            break
 
 update_thread = Thread(target=infinite_update)
 update_thread.start()
