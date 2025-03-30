@@ -1141,6 +1141,8 @@ def broadcast(message: str):
         except:
             pass
 
+broadcast("✅ Бот снова работает!")
+
 def infinite_update():
     print("infinite_update started")
     while True:
