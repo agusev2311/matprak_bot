@@ -639,16 +639,22 @@ def check_final(call, answer_id: int, verdict: str):
     else:
         verdict_message = "❌ Вердикт: неверно"
 
+    comment2 = ""
+    if comment:
+        comment2 = f"\n📜 Комментарий: {comment}"
     bot.send_message(sa_data[2], f"""🥳 Ваше решение проверено!
 
+Курс: {sql_return.get_course_name(sql_return.get_course_from_answer_id(answer_id))}
+Урок: {sql_return.get_lesson_name(sql_return.get_lesson_from_answer_id(answer_id))}
+Задача: {sql_return.get_task_name(sql_return.get_task_from_answer_id(answer_id))}
 📝 Текст решения:\n{sa_data[3]}
-{verdict_message}
-📜 Комментарий: {comment}""")
+{verdict_message}{comment2}""")
 
     sql_return.log_action(call.from_user.id, "check_final", f"{answer_id}")
     mm_check(call)
 
 def mm_courses(call, page=0):
+
     user = sql_return.find_user_id(call.from_user.id)
 
     if not user:
