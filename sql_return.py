@@ -2,6 +2,7 @@ import sqlite3
 import json
 import datetime
 import os
+from typing import Optional
 
 with open('config.json', 'r') as file:
     config = json.load(file)
@@ -514,3 +515,72 @@ def undo_self_reject(sol_id: int):
 
     cursor.close()
     conn.close()
+
+def get_course_from_answer_id(answer_id: int) -> Optional[int]:
+    conn = sqlite3.connect(config["db-name"], check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT courses.course_id
+        FROM student_answers
+        JOIN tasks ON student_answers.task_id = tasks.id
+        JOIN lessons ON tasks.lesson_id = lessons.id
+        JOIN courses ON lessons.course_id = courses.course_id
+        WHERE student_answers.id = ?
+    ''', (answer_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else None
+
+def get_lesson_from_answer_id(answer_id: int) -> Optional[int]:
+    conn = sqlite3.connect(config["db-name"], check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT lessons.id
+        FROM student_answers
+        JOIN tasks ON student_answers.task_id = tasks.id
+        JOIN lessons ON tasks.lesson_id = lessons.id
+        WHERE student_answers.id = ?
+    ''', (answer_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else None
+
+def get_task_from_answer_id(answer_id: int) -> Optional[int]:
+    conn = sqlite3.connect(config["db-name"], check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT task_id FROM student_answers WHERE id = ?
+    ''', (answer_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else None
+
+def get_course_name(course_id: int) -> Optional[str]:
+    conn = sqlite3.connect(config["db-name"], check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT course_name FROM courses WHERE course_id = ?
+    ''', (course_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else None
+
+def get_lesson_title(lesson_id: int) -> Optional[str]:
+    conn = sqlite3.connect(config["db-name"], check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT title FROM lessons WHERE id = ?
+    ''', (lesson_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else None
+
+def get_task_title(task_id: int) -> Optional[str]:
+    conn = sqlite3.connect(config["db-name"], check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT title FROM tasks WHERE id = ?
+    ''', (task_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else None
