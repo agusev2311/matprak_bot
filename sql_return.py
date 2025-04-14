@@ -565,7 +565,7 @@ def get_course_name(course_id: int) -> Optional[str]:
     conn.close()
     return result[0] if result else None
 
-def get_lesson_title(lesson_id: int) -> Optional[str]:
+def get_lesson_name(lesson_id: int) -> Optional[str]:
     conn = sqlite3.connect(config["db-name"], check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('''
@@ -575,7 +575,7 @@ def get_lesson_title(lesson_id: int) -> Optional[str]:
     conn.close()
     return result[0] if result else None
 
-def get_task_title(task_id: int) -> Optional[str]:
+def get_task_name(task_id: int) -> Optional[str]:
     conn = sqlite3.connect(config["db-name"], check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('''
