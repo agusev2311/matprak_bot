@@ -34,10 +34,13 @@ def start(message):
         button2 = types.InlineKeyboardButton("🔍 Принять решение", callback_data=f'mm_check_0')
         button3 = types.InlineKeyboardButton("📃 Все курсы", callback_data=f'mm_courses_0')
         button4 = types.InlineKeyboardButton("🗂 Все решения", callback_data=f"mm_answers_0")
+        button5 = types.InlineKeyboardButton("🔑 Панель админа", callback_data="admin_panel_open")
         markup.add(button1)
         markup.add(button2)
         markup.add(button3)
         markup.add(button4)
+        if message.from_user.id == config["admin_id"]:
+            markup.add(button5)
         bot.reply_to(message, f"""Здравствуйте, {message.from_user.first_name}!""", reply_markup=markup)
     elif user and user[3] == "banned":
         bot.reply_to(message, "Вы были забанены. Обратитесь к администратору")
@@ -106,10 +109,13 @@ def handle_query(call):
             button2 = types.InlineKeyboardButton("🔍 Принять решение", callback_data=f'mm_check_0')
             button3 = types.InlineKeyboardButton("📃 Все курсы", callback_data=f'mm_courses_0')
             button4 = types.InlineKeyboardButton("🗂 Все решения", callback_data=f"mm_answers_0")
+            button5 = types.InlineKeyboardButton("🔑 Панель админа", callback_data="admin_panel_open")
             markup.add(button1)
             markup.add(button2)
             markup.add(button3)
             markup.add(button4)
+            if call.from_user.id == config["admin_id"]:
+                markup.add(button5)
             bot.edit_message_text(f"""Здравствуйте, {call.from_user.first_name}!""", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
         elif user and user[3] == "banned":
             bot.edit_message_text("Вы были забанены. Обратитесь к администратору", chat_id=call.message.chat.id, message_id=call.message.message_id)
@@ -158,6 +164,16 @@ def handle_query(call):
         self_reject(call, int(call.data.split("_")[-1]))
     elif call.data.startswith("undo_self_reject"):
         self_reject(call, int(call.data.split("_")[-1]), True)
+    elif call.data.startswith("admin_panel_open"):
+        admin_panel(call)
+    elif call.data.startswith("admin_panel_stop"):
+        stop(call)
+    elif call.data.startswith("admin_panel_ban"):
+        ban(call)
+    elif call.data.startswith("admin_panel_unban"):
+        unban(call)
+    elif call.data.startswith("admin_panel_conf_stop"):
+        stop_confirm(call)
     else:
         bot.answer_callback_query(call.id, "Обработчика для этой кнопки не существует.")
         bot.send_message(config["admin_id"], f"{call.from_user.id} ({call.from_user.username}; {sql_return.get_user_name(call.from_user.id)[0]} {sql_return.get_user_name(call.from_user.id)[1]}) использовал неизвестную кнопку: {call.data}")
@@ -1114,30 +1130,54 @@ def why_only_one_file(message):
 """
     bot.send_message(message.chat.id, text)
 
-@bot.message_handler(commands=["ban"])
-def ban(message):
-    if message.from_user.id != config["admin_id"]:
+def ban(call):
+    if call.from_user.id != config["admin_id"]:
         return
-    for user in message.text.split()[1:]:
+    bot.send_message(call.chat.id, "Введите id пользователей")
+    bot.register_next_step_handler(call, ban_enter)
+
+def ban_enter(call):
+    for user in call.message.text.split():
         sql_return.set_user_status(user, "banned")
-    sql_return.log_action(message.from_user.id, "ban", f"{message.text.split()[1:]}")
-    bot.send_message(message.chat.id, "Пользователи забанены")
+    sql_return.log_action(call.from_user.id, "ban", f"{call.message.text.split()}")
+    bot.send_message(call.message.chat.id, "Пользователи забанены")
 
-@bot.message_handler(commands=["unban"])
-def unban(message):
-    if message.from_user.id != config["admin_id"]:
+def unban(call):
+    if call.from_user.id != config["admin_id"]:
         return
-    for user in message.text.split()[1:]:
-        sql_return.set_user_status(user, "approved")
-    sql_return.log_action(message.from_user.id, "unban", f"{message.text.split()[1:]}")
-    bot.send_message(message.chat.id, "Пользователи разбанены")
+    bot.send_message(call.chat.id, "Введите id пользователей")
+    bot.register_next_step_handler(call, unban_enter)
 
-@bot.message_handler(commands=["stop"])
-def stop(message):
+def unban_enter(call):
+    for user in call.message.text.split():
+        sql_return.set_user_status(user, "approved")
+    sql_return.log_action(call.from_user.id, "ban", f"{call.message.text.split()}")
+    bot.send_message(call.message.chat.id, "Пользователи разбанены")
+
+def stop_confirm(call):
+    markup = types.InlineKeyboardMarkup()
+    wtf_markup = types.InlineKeyboardMarkup()
+
+    markup.row(types.InlineKeyboardButton("🔒 Заблокировать", callback_data=f'admin_panel_ban'), types.InlineKeyboardButton("🔓 Разблокировать", callback_data=f'admin_panel_unban'))
+    # markup.add(types.InlineKeyboardButton("🛑 Остановить бота", callback_data="admin_panel_stop"))
+    markup.row(types.InlineKeyboardButton("🛑 Я уверен", callback_data=f'admin_panel_stop'), types.InlineKeyboardButton("🫢 Отменить", callback_data=f'admin_panel_open'))
+    markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
+    wtf_markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
+
+    if call.from_user.id == config["admin_id"]:
+        bot.edit_message_text(f"""Здравствуйте, админ (омг я же сам админ, точно)""", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+    else:
+        bot.edit_message_text(f"""Подожди, подожди, подожди. Как ты это сделал?!?!?!""", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=wtf_markup)
+        bot.send_message(config["admin_id"], f"❗️❗️СРОЧНО❗️❗️\n\nПользователь {call.from_user.id} ({sql_return.get_user_name(call.from_user.id)}) попытался попасть в панель админа")
+
+def stop(call):
     global is_polling
-    if message.from_user.id == config["admin_id"]:
+   
+    if call.from_user.id == config["admin_id"]:
+        bot.send_message(call.message.chat.id, "Подождите...")
         broadcast("❌ Бот временно закрыт на технические работы.")
         is_polling = False
+        bot.send_message(call.message.chat.id, "Бот успешно отправил все сообщения.")
         bot.stop_polling()
 
 def broadcast(message: str):
@@ -1147,6 +1187,21 @@ def broadcast(message: str):
         except:
             pass
 
+def admin_panel(call):
+    markup = types.InlineKeyboardMarkup()
+    wtf_markup = types.InlineKeyboardMarkup()
+
+    # markup.row(types.InlineKeyboardButton("🔒 Заблокировать", callback_data=f'admin_panel_ban'), types.InlineKeyboardButton("🔓 Разблокировать", callback_data=f'admin_panel_unban'))
+    markup.add(types.InlineKeyboardButton("🛑 Остановить бота", callback_data="admin_panel_conf_stop"))
+    markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
+    wtf_markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
+
+    if call.from_user.id == config["admin_id"]:
+        bot.edit_message_text(f"""Несданные задачи по матпраку: {sql_return.count_unchecked_solutions(3)}""", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+    else:
+        bot.edit_message_text(f"""Подожди, подожди, подожди. Как ты это сделал?!?!?!""", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=wtf_markup)
+        bot.send_message(config["admin_id"], f"❗️❗️СРОЧНО❗️❗️\n\nПользователь {call.from_user.id} ({sql_return.get_user_name(call.from_user.id)}) попытался попасть в панель админа")
+
 broadcast("✅ Бот снова работает!")
 
 def infinite_update():
@@ -1155,17 +1210,17 @@ def infinite_update():
         try:
             prog.update_sheet()
         except Exception as e:
-            try:
-                bot.send_message(config["admin_id"], f"Произошла ошибка в infinite_update: {str(e)}")
-            except:
-                pass
+            # try:
+            #     bot.send_message(config["admin_id"], f"Произошла ошибка в infinite_update: {str(e)}")
+            # except:
+            #     pass
             sql_return.bug_report(str(e))
         time.sleep(60 * 3)
         if not is_polling:
             break
 
-update_thread = Thread(target=infinite_update)
-update_thread.start()
+# update_thread = Thread(target=infinite_update)
+# update_thread.start()
 
 while is_polling:
     print("polling started")
@@ -1173,8 +1228,8 @@ while is_polling:
         bot.polling(none_stop=True)
     except Exception as e:
         sql_return.bug_report(str(e))
-        try:
-            bot.send_message(config["admin_id"], f"Произошла ошибка: {str(e)}")
-        except:
-            print(f"report error")
+        # try:
+        #     bot.send_message(config["admin_id"], f"Произошла ошибка: {str(e)}")
+        # except:
+        #     print(f"report error")
         print(f"polling error: {str(e)}")
