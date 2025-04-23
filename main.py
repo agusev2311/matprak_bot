@@ -852,7 +852,7 @@ def course_content(call, course_id, page=0):
         bot.send_message(call.message.chat.id, "Вы не зарегистрированы.")
         return
 
-    is_admin = str(call.from_user.id) == config["admin_id"]
+    is_admin = str(call.from_user.id) == str(config["admin_id"])
 
     lessons = sql_return.lessons_in_course(course_id)
 
@@ -898,7 +898,7 @@ def lesson_content(call, course_id, lesson_id, page=0):
         bot.send_message(call.message.chat.id, "Вы не зарегистрированы.")
         return
 
-    is_admin = str(call.from_user.id) == config["admin_id"]
+    is_admin = str(call.from_user.id) == str(config["admin_id"])
 
     tasks = sql_return.tasks_in_lesson(lesson_id)  
 
