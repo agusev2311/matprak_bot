@@ -10,6 +10,7 @@ import os
 from dateutil.relativedelta import relativedelta
 from threading import Thread
 import prog
+import zipfile
 
 print("main.py started")
 
@@ -1221,6 +1222,35 @@ def infinite_update():
 
 # update_thread = Thread(target=infinite_update)
 # update_thread.start()
+
+def backup_databases():
+    try:
+        archive_name = f"backup_{datetime.datetime.now().strftime('%Y-%m-%d')}.zip"
+        with zipfile.ZipFile(archive_name, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for db_file in ('users.db', 'files.db'):
+                if os.path.exists(db_file):
+                    zipf.write(db_file)
+            for root, dirs, files in os.walk('files'):
+                for file in files:
+                    zipf.write(os.path.join(root, file))
+        with open(archive_name, 'rb') as f:
+            bot.send_document(config["admin_id"], f)
+        os.remove(archive_name)
+    except Exception as e:
+        sql_return.bug_report(f"Backup error: {e}")
+
+def backup_scheduler():
+    backup_databases()
+    while is_polling:
+        now = datetime.datetime.now()
+        next_midnight = (now + datetime.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        time.sleep((next_midnight - now).total_seconds())
+        if not is_polling:
+            break
+        backup_databases()
+
+backup_thread = Thread(target=backup_scheduler)
+backup_thread.start()
 
 while is_polling:
     print("polling started")
