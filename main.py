@@ -583,56 +583,103 @@ def check_task(type: str, call, task_data, comment: str = "None"):
         files_id = task_data[4] if len(task_data) > 4 else None  # Assuming files_id is at index 4
         answer_text = task_data[3]
         student_name = sql_return.get_user_name(task_data[2])
-
-    # Construct message text
-    text = f"""<b>Решение</b>:
-<b>Отправил</b> {student_name[0]} {student_name[1]}
-<b>Урок</b>: {lesson_data[2]}
-<b>Задача</b>: {task_data_2[2]}
-<b>Решение</b>:
-{answer_text}
-<b>Комментарий к вердикту</b>: {comment}"""
-    if files_id is None:
-        bot.edit_message_text(
-            text,
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
-            reply_markup=markup,
-            parse_mode="HTML"
-        )
-    else:
-        # Delete old message
-        bot.delete_message(
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id
-        )
-        
-        # Send message with file
-        file_id = files_id.split()[0]
-        file_info = sql_return.get_file(file_id.split(".")[0])
-        file_type = file_info[2]
-        file_name = file_info[3]
-        file_path = file_info[4]
-        
-        if file_type == 'photo':
-            with open(file_path, 'rb') as photo:
-                bot.send_photo(
-                    call.message.chat.id,
-                    photo,
-                    caption=text,
-                    reply_markup=markup,
-                    parse_mode="HTML"
-                )
+    try:
+        # Construct message text
+        text = f"""<b>Решение</b>:
+    <b>Отправил</b> {student_name[0]} {student_name[1]}
+    <b>Урок</b>: {lesson_data[2]}
+    <b>Задача</b>: {task_data_2[2]}
+    <b>Решение</b>:
+    {answer_text}
+    <b>Комментарий к вердикту</b>: {comment}"""
+        if files_id is None:
+            bot.edit_message_text(
+                text,
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=markup,
+                parse_mode="HTML"
+            )
         else:
-            with open(file_path, 'rb') as doc:
-                bot.send_document(
-                    call.message.chat.id,
-                    doc,
-                    visible_file_name=file_name,
-                    caption=text,
-                    reply_markup=markup,
-                    parse_mode="HTML"
-                )
+            # Delete old message
+            bot.delete_message(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id
+            )
+            
+            # Send message with file
+            file_id = files_id.split()[0]
+            file_info = sql_return.get_file(file_id.split(".")[0])
+            file_type = file_info[2]
+            file_name = file_info[3]
+            file_path = file_info[4]
+            
+            if file_type == 'photo':
+                with open(file_path, 'rb') as photo:
+                    bot.send_photo(
+                        call.message.chat.id,
+                        photo,
+                        caption=text,
+                        reply_markup=markup,
+                        parse_mode="HTML"
+                    )
+            else:
+                with open(file_path, 'rb') as doc:
+                    bot.send_document(
+                        call.message.chat.id,
+                        doc,
+                        visible_file_name=file_name,
+                        caption=text,
+                        reply_markup=markup,
+                        parse_mode="HTML"
+                    )
+    except:
+        # Construct message text
+        text = f"""Решение:
+    Отправил {student_name[0]} {student_name[1]}
+    Урок>: {lesson_data[2]}
+    Задача>: {task_data_2[2]}
+    Решение:
+    {answer_text}
+    Комментарий к вердикту: {comment}"""
+        if files_id is None:
+            bot.edit_message_text(
+                text,
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=markup
+            )
+        else:
+            # Delete old message
+            bot.delete_message(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id
+            )
+            
+            # Send message with file
+            file_id = files_id.split()[0]
+            file_info = sql_return.get_file(file_id.split(".")[0])
+            file_type = file_info[2]
+            file_name = file_info[3]
+            file_path = file_info[4]
+            
+            if file_type == 'photo':
+                with open(file_path, 'rb') as photo:
+                    bot.send_photo(
+                        call.message.chat.id,
+                        photo,
+                        caption=text,
+                        reply_markup=markup
+                    )
+            else:
+                with open(file_path, 'rb') as doc:
+                    bot.send_document(
+                        call.message.chat.id,
+                        doc,
+                        visible_file_name=file_name,
+                        caption=text,
+                        reply_markup=markup
+                    )
 
 def check_add_comment(message, call, type: str, task_id):
     task_data = sql_return.get_student_answer_from_id(task_id)
