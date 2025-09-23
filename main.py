@@ -271,7 +271,11 @@ def mm_send_task(call, course_id, lesson_id, page=0):
 
     is_admin = str(call.from_user.id) == config["admin_id"]
 
-    tasks = sql_return.tasks_in_lesson(lesson_id)  
+    tasks_temp = sql_return.tasks_in_lesson(lesson_id)
+    tasks = []
+    for i in tasks_temp:
+        if i[3] == "open":
+            tasks.append(i)
 
     courses_per_page = 8
     total_pages = (len(tasks) + courses_per_page - 1) // courses_per_page

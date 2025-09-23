@@ -584,3 +584,38 @@ def get_task_name(task_id: int) -> Optional[str]:
     result = cursor.fetchone()
     conn.close()
     return result[0] if result else None
+
+def update_task_status(task_id: int):
+    conn = sqlite3.connect(config["db-name"], check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT deadline FROM tasks WHERE id = ?
+    ''', (task_id,))
+    result = cursor.fetchone()
+    conn.close()
+
+    if result[0]:
+        if datetime.datetime.now() > datetime.datetime.fromtimestamp(result[0] / 1000.0):
+            conn = sqlite3.connect(config["db-name"], check_same_thread=False)
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE tasks
+                SET status = 'close'
+                WHERE id = ?
+            ''', (task_id,))
+            conn.close()
+
+
+def is_task_open(task_id: int) -> bool:
+    update_task_status(task_id)
+    conn = sqlite3.connect(config["db-name"], check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT status FROM tasks WHERE id = ?
+    ''', (task_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] == "open"
+
+if __name__ == "__main__":
+    update_task_status(161)
