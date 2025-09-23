@@ -1245,7 +1245,7 @@ def admin_panel(call):
     wtf_markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
 
     if call.from_user.id == config["admin_id"]:
-        bot.edit_message_text(f"""Несданные задачи по матпраку: {sql_return.count_unchecked_solutions(3)}""", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+        bot.edit_message_text(f"""Несданные задачи по матпраку: {sql_return.count_unchecked_solutions(6)}""", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
     else:
         bot.edit_message_text(f"""Подожди, подожди, подожди. Как ты это сделал?!?!?!""", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=wtf_markup)
         bot.send_message(config["admin_id"], f"❗️❗️СРОЧНО❗️❗️\n\nПользователь {call.from_user.id} ({sql_return.get_user_name(call.from_user.id)}) попытался попасть в панель админа")
