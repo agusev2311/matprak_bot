@@ -982,6 +982,7 @@ def lesson_content(call, course_id, lesson_id, page=0):
         pass
 
 def task_info(call, task_id, lesson_id, course_id):
+    sql_return.update_task_status(task_id)
     task = sql_return.task_info(task_id)
     
     if task:
@@ -993,22 +994,30 @@ def task_info(call, task_id, lesson_id, course_id):
             'dev': 'В разработке'
         }
         task_status = status_translation.get(task_status, 'Неизвестен')
-        print(task_deadline)
+        
         if task_deadline:
-            deadline_date = datetime.datetime.strptime(datetime.datetime.fromtimestamp(task_deadline), '%Y-%m-%d %H:%M:%S')
+            # Преобразуем временную метку в объект datetime
+            deadline_date = datetime.datetime.fromtimestamp(task_deadline / 1000)
             current_date = datetime.datetime.now()
+            
+            # Вычисляем количество дней до дедлайна
+            seconds_left = (deadline_date - current_date).total_seconds()
             days_left = (deadline_date - current_date).total_seconds() / (60 * 60 * 24)
-            if task_status == 'Архивирован' or deadline_date < current_date:
+            
+            print(deadline_date, current_date, days_left, seconds_left, (current_date - deadline_date).total_seconds())
+            
+            if days_left > 2:
+                deadline_str = deadline_date.strftime('%d-%m-%Y %H:%M')
+                time_left_str = f"{int(days_left)} дней"  # Преобразуем в целое число
+                deadline_info = f"🔥 <b>Дедлайн через</b>: {time_left_str} ({deadline_str})"
+            elif seconds_left < 0:
                 deadline_str = deadline_date.strftime('%d-%m-%Y %H:%M')
                 deadline_info = f"🗓 <b>Дедлайн</b>: {deadline_str}"
-            elif days_left < 2:
-                deadline_str = deadline_date.strftime('%d-%m-%Y %H:%M')
-                deadline_info = f"🔥 <b>Дедлайн через</b>: {time_left_str} ({deadline_str})"
             else:
                 time_left = relativedelta(deadline_date, current_date)
                 time_left_str = f"{time_left.days} дней, {time_left.hours} часов, {time_left.minutes} минут"
                 deadline_str = deadline_date.strftime('%d-%m-%Y %H:%M')
-                deadline_info = f"⏰ <b>Дедлайн через</b>: {time_left_str} ({deadline_str})"
+                deadline_info = f"🔥 <b>Дедлайн через</b>: {time_left_str} ({deadline_str})"
         else:
             deadline_info = "⏰ <b>Дедлайн</b>: Не указан"
 
@@ -1309,8 +1318,8 @@ while is_polling:
         bot.polling(none_stop=True)
     except Exception as e:
         sql_return.bug_report(str(e))
-        # try:
-        #     bot.send_message(config["admin_id"], f"Произошла ошибка: {str(e)}")
-        # except:
-        #     print(f"report error")
+        try:
+            bot.send_message(config["admin_id"], f"Произошла ошибка: {str(e)}")
+        except:
+            print(f"report error")
         print(f"polling error: {str(e)}")

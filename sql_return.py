@@ -593,9 +593,10 @@ def update_task_status(task_id: int):
     ''', (task_id,))
     result = cursor.fetchone()
     conn.close()
-
+    print((datetime.datetime.fromtimestamp(result[0] / 1000.0) - datetime.datetime.now()).total_seconds())
     if result[0]:
-        if datetime.datetime.now() > datetime.datetime.fromtimestamp(result[0] / 1000.0):
+        if (datetime.datetime.fromtimestamp(result[0] / 1000.0) - datetime.datetime.now()).total_seconds() < 0:
+            print("triggered")
             conn = sqlite3.connect(config["db-name"], check_same_thread=False)
             cursor = conn.cursor()
             cursor.execute('''
@@ -603,6 +604,8 @@ def update_task_status(task_id: int):
                 SET status = 'close'
                 WHERE id = ?
             ''', (task_id,))
+            conn.commit()
+            cursor.close()
             conn.close()
 
 
@@ -616,6 +619,17 @@ def is_task_open(task_id: int) -> bool:
     result = cursor.fetchone()
     conn.close()
     return result[0] == "open"
+
+def time_left_for_the_task(task_id: int) -> bool:
+    # task_id -> seconds
+    conn = sqlite3.connect(config["db-name"], check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT deadline FROM tasks WHERE id = ?
+    ''', (task_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return max(0, result[0])
 
 if __name__ == "__main__":
     update_task_status(161)
