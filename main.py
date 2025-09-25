@@ -989,13 +989,13 @@ def task_info(call, task_id, lesson_id, course_id):
 
         status_translation = {
             'open': 'Открыт',
-            'arc': 'Архивирован',
+            'close': 'Архивирован',
             'dev': 'В разработке'
         }
         task_status = status_translation.get(task_status, 'Неизвестен')
 
         if task_deadline:
-            deadline_date = datetime.datetime.strptime(task_deadline, '%Y-%m-%d %H:%M:%S')
+            deadline_date = datetime.datetime.strptime(datetime.datetime.fromtimestamp(task_deadline), '%Y-%m-%d %H:%M:%S')
             current_date = datetime.datetime.now()
             days_left = (deadline_date - current_date).total_seconds() / (60 * 60 * 24)
             if task_status == 'Архивирован' or deadline_date < current_date:
