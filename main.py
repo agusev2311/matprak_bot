@@ -1319,7 +1319,8 @@ while is_polling:
     except Exception as e:
         sql_return.bug_report(str(e))
         try:
-            bot.send_message(config["admin_id"], f"Произошла ошибка: {str(e)}")
+            if str(e) != "HTTPSConnectionPool(host='api.telegram.org', port=443): Read timed out. (read timeout=25)":
+                bot.send_message(config["admin_id"], f"Произошла ошибка: {str(e)}")
         except:
             print(f"report error")
         print(f"polling error: {str(e)}")
