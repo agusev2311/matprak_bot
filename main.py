@@ -993,7 +993,7 @@ def task_info(call, task_id, lesson_id, course_id):
             'dev': 'В разработке'
         }
         task_status = status_translation.get(task_status, 'Неизвестен')
-
+        print(task_deadline)
         if task_deadline:
             deadline_date = datetime.datetime.strptime(datetime.datetime.fromtimestamp(task_deadline), '%Y-%m-%d %H:%M:%S')
             current_date = datetime.datetime.now()
