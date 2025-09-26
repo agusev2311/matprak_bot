@@ -315,23 +315,23 @@ def mm_send_final(call, lesson_id, course_id, task_id):
         }
         task_status = status_translation.get(task_status, 'Неизвестен')
 
-        if task_deadline:
-            deadline_date = datetime.datetime.strptime(task_deadline, '%Y-%m-%d %H:%M:%S')
-            current_date = datetime.datetime.now()
-            days_left = (deadline_date - current_date).total_seconds() / (60 * 60 * 24)
-            if task_status == 'Архивирован' or deadline_date < current_date:
-                deadline_str = deadline_date.strftime('%d-%m-%Y %H:%M')
-                deadline_info = f"🗓 <b>Дедлайн</b>: {deadline_str}"
-            elif days_left < 2:
-                deadline_str = deadline_date.strftime('%d-%m-%Y %H:%M')
-                deadline_info = f"🔥 <b>Дедлайн через</b>: {time_left_str} ({deadline_str})"
-            else:
-                time_left = relativedelta(deadline_date, current_date)
-                time_left_str = f"{time_left.days} дней, {time_left.hours} часов, {time_left.minutes} минут"
-                deadline_str = deadline_date.strftime('%d-%m-%Y %H:%M')
-                deadline_info = f"⏰ <b>Дедлайн через</b>: {time_left_str} ({deadline_str})"
-        else:
-            deadline_info = "⏰ <b>Дедлайн</b>: Не указан"
+        # if task_deadline:
+        #     deadline_date = datetime.datetime.strptime(task_deadline, '%Y-%m-%d %H:%M')
+        #     current_date = datetime.datetime.now()
+        #     days_left = (deadline_date - current_date).total_seconds() / (60 * 60 * 24)
+        #     if task_status == 'Архивирован' or deadline_date < current_date:
+        #         deadline_str = deadline_date.strftime('%d-%m-%Y %H:%M')
+        #         deadline_info = f"🗓 <b>Дедлайн</b>: {deadline_str}"
+        #     elif days_left < 2:
+        #         deadline_str = deadline_date.strftime('%d-%m-%Y %H:%M')
+        #         deadline_info = f"🔥 <b>Дедлайн через</b>: {time_left_str} ({deadline_str})"
+        #     else:
+        #         time_left = relativedelta(deadline_date, current_date)
+        #         time_left_str = f"{time_left.days} дней, {time_left.hours} часов, {time_left.minutes} минут"
+        #         deadline_str = deadline_date.strftime('%d-%m-%Y %H:%M')
+        #         deadline_info = f"⏰ <b>Дедлайн через</b>: {time_left_str} ({deadline_str})"
+        # else:
+        deadline_info = "⏰ <b>Дедлайн</b>: Не указан"
 
         task_info_message = (f"Вы начали сдачу решения для задачи, приведённой ниже. Если вы хотите отменить это действие, напишите вместо текста решения \"Stop\".\n\nПрикрепить к решению можно максимум 1 файл (документ / изображение). Подробнее - /why_only_one_file\n\n"
                              f"📌 <b>Название задачи</b>: {task_title}\n"
@@ -1314,13 +1314,14 @@ backup_thread.start()
 
 while is_polling:
     print("polling started")
-    try:
-        bot.polling(none_stop=True)
-    except Exception as e:
-        sql_return.bug_report(str(e))
-        try:
-            if str(e) != "HTTPSConnectionPool(host='api.telegram.org', port=443): Read timed out. (read timeout=25)":
-                bot.send_message(config["admin_id"], f"Произошла ошибка: {str(e)}")
-        except:
-            print(f"report error")
-        print(f"polling error: {str(e)}")
+    bot.polling(none_stop=True)
+    # try:
+    #     bot.polling(none_stop=True)
+    # except Exception as e:
+    #     sql_return.bug_report(str(e))
+    #     try:
+    #         if str(e) != "HTTPSConnectionPool(host='api.telegram.org', port=443): Read timed out. (read timeout=25)":
+    #             bot.send_message(config["admin_id"], f"Произошла ошибка: {str(e)}")
+    #     except:
+    #         print(f"report error")
+    #     print(f"polling error: {str(e)}")

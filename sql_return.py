@@ -593,10 +593,8 @@ def update_task_status(task_id: int):
     ''', (task_id,))
     result = cursor.fetchone()
     conn.close()
-    print((datetime.datetime.fromtimestamp(result[0] / 1000.0) - datetime.datetime.now()).total_seconds())
     if result[0]:
         if (datetime.datetime.fromtimestamp(result[0] / 1000.0) - datetime.datetime.now()).total_seconds() < 0:
-            print("triggered")
             conn = sqlite3.connect(config["db-name"], check_same_thread=False)
             cursor = conn.cursor()
             cursor.execute('''
