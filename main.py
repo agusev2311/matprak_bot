@@ -365,9 +365,11 @@ def mm_send_final_2(message, lesson_id, course_id, task_id, user_id):
         if "/why_only_one_file" in answer_text:
             why_only_one_file(message)
             return
-        if answer_text in ["/start", "/stop", "Stop", "stop"]:
+        if answer_text in ["/stop", "Stop", "stop"]:
             bot.send_message(message.chat.id, "Отменено")
             return
+        if answer_text == "/start":
+            start(message)
         sql_return.new_student_answer(task_id, user_id, answer_text)
         markup = types.InlineKeyboardMarkup()
         button1 = types.InlineKeyboardButton("🏠 Главное меню", callback_data=f'mm_main_menu')
