@@ -274,7 +274,7 @@ def mm_send_task(call, course_id, lesson_id, page=0):
     tasks_temp = sql_return.tasks_in_lesson(lesson_id)
     tasks = []
     for i in tasks_temp:
-        if i[3] == "open":
+        if sql_return.is_task_open(i[0]):
             tasks.append(i)
 
     courses_per_page = 8
