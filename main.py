@@ -1286,62 +1286,188 @@ def infinite_update():
 # update_thread = Thread(target=infinite_update)
 # update_thread.start()
 
-def log(msg):
+# === Settings ===
+# Держи меньше лимита Telegram (на практике часто режут по 20–40MB).
+MAX_PART_BYTES = 20 * 1024 * 1024  # 20 MB
+
+def log(msg: str) -> None:
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{now}] {msg}", flush=True)
 
-def backup_databases():
+def safe_int(x, default=0) -> int:
+    try:
+        return int(x)
+    except Exception:
+        return default
+
+def send_file_to_admin(path: str, caption: str = "") -> None:
+    admin_id = safe_int(config.get("admin_id"))
+    with open(path, "rb") as f:
+        bot.send_document(admin_id, f, caption=caption)
+
+def backup_make_db_zip() -> str:
+    """Создаёт zip с users.db/files.db (обычно маленький) и возвращает имя архива."""
+    archive_name = f"backup_db_{datetime.datetime.now().strftime('%Y-%m-%d')}.zip"
+    with zipfile.ZipFile(archive_name, "w", zipfile.ZIP_DEFLATED) as zipf:
+        added = 0
+        for db_file in ("users.db", "files.db"):
+            if os.path.exists(db_file):
+                zipf.write(db_file)
+                added += 1
+                log(f"backup: added {db_file}")
+    size = os.path.getsize(archive_name)
+    log(f"backup: DB ZIP READY name={archive_name} files={added} size={size} bytes")
+    return archive_name
+
+def backup_make_files_splits(max_part_bytes: int = MAX_PART_BYTES):
+    """
+    Создаёт несколько zip-частей для папки files/ так, чтобы каждая часть была <= max_part_bytes (примерно).
+    Возвращает (parts, added_files).
+    """
+    base_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    parts = []
+    added = 0
+    part_idx = 1
+
+    zipf = None
+    archive_name = None
+    current_size = 0
+
+    def new_zip():
+        nonlocal part_idx, archive_name, zipf, current_size
+        if zipf is not None:
+            zipf.close()
+        archive_name = f"backup_files_{base_date}_part{part_idx}.zip"
+        zipf = zipfile.ZipFile(archive_name, "w", zipfile.ZIP_DEFLATED)
+        parts.append(archive_name)
+        current_size = 0
+        log(f"backup: opened {archive_name}")
+        part_idx += 1
+
+    if not os.path.isdir("files"):
+        log("backup: folder 'files' not found, skipping files backup")
+        return [], 0
+
+    new_zip()
+
+    for root, dirs, files in os.walk("files"):
+        for filename in files:
+            path = os.path.join(root, filename)
+
+            try:
+                file_size = os.path.getsize(path)
+            except OSError as e:
+                log(f"backup: skip unreadable {path}: {e!r}")
+                continue
+
+            # Если файл сам по себе огромный — кладём его в отдельную часть.
+            if file_size > max_part_bytes:
+                # Закрываем текущую часть (если она пустая/не пустая — не важно), открываем новую
+                new_zip()
+                try:
+                    zipf.write(path)
+                    added += 1
+                    log(f"backup: added HUGE file {path} size={file_size} bytes")
+                except Exception as e:
+                    log(f"backup: failed to add HUGE file {path}: {e!r}")
+                # После huge-файла начинаем ещё одну новую часть, чтобы не мешать дальше
+                new_zip()
+                continue
+
+            # Если файл не помещается — начинаем новый архив
+            if current_size + file_size > max_part_bytes:
+                new_zip()
+
+            try:
+                zipf.write(path)
+                current_size += file_size
+                added += 1
+            except Exception as e:
+                log(f"backup: failed to add {path}: {e!r}")
+
+    if zipf is not None:
+        zipf.close()
+
+    # Логи размеров частей
+    for p in parts:
+        try:
+            log(f"backup: PART READY name={p} size={os.path.getsize(p)} bytes")
+        except OSError:
+            pass
+
+    return parts, added
+
+def backup_cleanup(paths):
+    for p in paths:
+        try:
+            os.remove(p)
+            log(f"backup: removed {p}")
+        except Exception as e:
+            log(f"backup: failed to remove {p}: {e!r}")
+
+def backup_databases_and_files_split():
+    """
+    Делает:
+    1) zip БД -> отправляет
+    2) zip-части files/ -> отправляет по одной (если есть)
+    """
+    created = []
     try:
         log("backup: START")
 
-        archive_name = f"backup_{datetime.datetime.now().strftime('%Y-%m-%d')}.zip"
+        # 1) БД
+        db_zip = backup_make_db_zip()
+        created.append(db_zip)
+        send_file_to_admin(db_zip, caption="Backup DB ✅")
+        log("backup: DB SENT")
 
-        with zipfile.ZipFile(archive_name, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            added = 0
+        # 2) files/ (split)
+        parts, added_files = backup_make_files_splits(MAX_PART_BYTES)
+        created.extend(parts)
 
-            for db_file in ('users.db', 'files.db'):
-                if os.path.exists(db_file):
-                    zipf.write(db_file)
-                    log(f"backup: added {db_file}")
-                    added += 1
+        if parts:
+            total_parts = len(parts)
+            log(f"backup: sending {total_parts} file parts, files_count={added_files}")
+            for i, part in enumerate(parts, 1):
+                size = os.path.getsize(part)
+                caption = f"Backup files ✅ ({i}/{total_parts})\nSize: {size} bytes"
+                send_file_to_admin(part, caption=caption)
+                log(f"backup: SENT {part} ({i}/{total_parts})")
+        else:
+            log("backup: no files parts to send")
 
-            for root, dirs, files in os.walk('files'):
-                for file in files:
-                    path = os.path.join(root, file)
-                    zipf.write(path)
-                    added += 1
-
-        size = os.path.getsize(archive_name)
-        log(f"backup: ZIP READY name={archive_name} files={added} size={size} bytes")
-
-        with open(archive_name, 'rb') as f:
-            bot.send_document(
-                int(config["admin_id"]),
-                f,
-                caption=f"Backup OK\nSize: {size} bytes"
-            )
-
-        log("backup: SENT TO TELEGRAM")
-
-        os.remove(archive_name)
-        log("backup: ZIP REMOVED")
+        backup_cleanup(created)
+        log("backup: DONE")
 
     except Exception as e:
         log(f"backup ERROR: {repr(e)}")
-        sql_return.bug_report(f"Backup error: {repr(e)}")
-
+        try:
+            sql_return.bug_report(f"Backup error: {repr(e)}")
+        except Exception:
+            pass
+        # На всякий случай чистим то, что успели создать
+        backup_cleanup(created)
 
 def backup_scheduler():
-    backup_databases()
+    # Сразу один бэкап при старте
+    backup_databases_and_files_split()
+
     while is_polling:
         now = datetime.datetime.now()
-        next_midnight = (now + datetime.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        time.sleep((next_midnight - now).total_seconds())
+        next_midnight = (now + datetime.timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        sleep_seconds = max(1, (next_midnight - now).total_seconds())
+        log(f"backup: next run at {next_midnight.strftime('%Y-%m-%d %H:%M:%S')} (sleep {int(sleep_seconds)}s)")
+        time.sleep(sleep_seconds)
+
         if not is_polling:
             break
-        backup_databases()
 
-backup_thread = Thread(target=backup_scheduler)
+        backup_databases_and_files_split()
+
+# Запуск планировщика в отдельном потоке
+backup_thread = Thread(target=backup_scheduler, daemon=True)
 backup_thread.start()
 
 while is_polling:
