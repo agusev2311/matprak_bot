@@ -1286,21 +1286,50 @@ def infinite_update():
 # update_thread = Thread(target=infinite_update)
 # update_thread.start()
 
+def log(msg):
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{now}] {msg}", flush=True)
+
 def backup_databases():
     try:
+        log("backup: START")
+
         archive_name = f"backup_{datetime.datetime.now().strftime('%Y-%m-%d')}.zip"
+
         with zipfile.ZipFile(archive_name, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            added = 0
+
             for db_file in ('users.db', 'files.db'):
                 if os.path.exists(db_file):
                     zipf.write(db_file)
+                    log(f"backup: added {db_file}")
+                    added += 1
+
             for root, dirs, files in os.walk('files'):
                 for file in files:
-                    zipf.write(os.path.join(root, file))
+                    path = os.path.join(root, file)
+                    zipf.write(path)
+                    added += 1
+
+        size = os.path.getsize(archive_name)
+        log(f"backup: ZIP READY name={archive_name} files={added} size={size} bytes")
+
         with open(archive_name, 'rb') as f:
-            bot.send_document(config["admin_id"], f)
+            bot.send_document(
+                int(config["admin_id"]),
+                f,
+                caption=f"Backup OK\nSize: {size} bytes"
+            )
+
+        log("backup: SENT TO TELEGRAM")
+
         os.remove(archive_name)
+        log("backup: ZIP REMOVED")
+
     except Exception as e:
-        sql_return.bug_report(f"Backup error: {e}")
+        log(f"backup ERROR: {repr(e)}")
+        sql_return.bug_report(f"Backup error: {repr(e)}")
+
 
 def backup_scheduler():
     backup_databases()
@@ -1318,13 +1347,13 @@ backup_thread.start()
 while is_polling:
     print("polling started")
     bot.polling(none_stop=True)
-    # try:
-    #     bot.polling(none_stop=True)
-    # except Exception as e:
-    #     sql_return.bug_report(str(e))
-    #     try:
-    #         if str(e) != "HTTPSConnectionPool(host='api.telegram.org', port=443): Read timed out. (read timeout=25)":
-    #             bot.send_message(config["admin_id"], f"Произошла ошибка: {str(e)}")
-    #     except:
-    #         print(f"report error")
-    #     print(f"polling error: {str(e)}")
+    try:
+        bot.polling(none_stop=True)
+    except Exception as e:
+        sql_return.bug_report(str(e))
+        try:
+            if str(e) != "HTTPSConnectionPool(host='api.telegram.org', port=443): Read timed out. (read timeout=25)":
+                bot.send_message(config["admin_id"], f"Произошла ошибка: {str(e)}")
+        except:
+            print(f"report error")
+        print(f"polling error: {str(e)}")
