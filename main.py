@@ -1297,8 +1297,17 @@ def infinite_update():
 # update_thread.start()
 
 # === Settings ===
-# Держи меньше лимита Telegram (на практике часто режут по 20–40MB).
-MAX_PART_BYTES = 20 * 1024 * 1024  # 20 MB
+# Держи меньше лимита Telegram (на практике часто режут по 40–50MB).
+try:
+    MAX_PART_MB = int(config.get("backup_max_part_mb", 45))
+except Exception:
+    MAX_PART_MB = 45
+MAX_PART_BYTES = MAX_PART_MB * 1024 * 1024
+try:
+    ZIP_COMPRESSLEVEL = int(config.get("backup_compresslevel", 9))
+except Exception:
+    ZIP_COMPRESSLEVEL = 9
+
 ERROR_ADMIN_SILENCE_SECONDS = 60 * 10
 POLLING_RETRY_SLEEP_SECONDS = 5
 POLLING_BACKOFF_MAX_SECONDS = 60
@@ -1424,7 +1433,7 @@ def send_file_to_admin(path: str, caption: str = "") -> None:
 def backup_make_db_zip() -> str:
     """Создаёт zip с users.db/files.db (обычно маленький) и возвращает имя архива."""
     archive_name = f"backup_db_{datetime.datetime.now().strftime('%Y-%m-%d')}.zip"
-    with zipfile.ZipFile(archive_name, "w", zipfile.ZIP_DEFLATED) as zipf:
+    with zipfile.ZipFile(archive_name, "w", zipfile.ZIP_DEFLATED, compresslevel=ZIP_COMPRESSLEVEL) as zipf:
         added = 0
         for db_file in ("users.db", "files.db"):
             if os.path.exists(db_file):
@@ -1434,6 +1443,50 @@ def backup_make_db_zip() -> str:
     size = os.path.getsize(archive_name)
     log(f"backup: DB ZIP READY name={archive_name} files={added} size={size} bytes")
     return archive_name
+
+def backup_make_files_zip_single(max_bytes: int):
+    """
+    Пытается собрать весь files/ в один zip.
+    Возвращает (archive_name, added_files, size_bytes) или (None, added_files, size_bytes).
+    """
+    if not os.path.isdir("files"):
+        log("backup: folder 'files' not found, skipping files backup")
+        return None, 0, 0
+
+    base_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    archive_name = f"backup_files_{base_date}.zip"
+    added = 0
+
+    with zipfile.ZipFile(archive_name, "w", zipfile.ZIP_DEFLATED, compresslevel=ZIP_COMPRESSLEVEL) as zipf:
+        for root, dirs, files in os.walk("files"):
+            for filename in files:
+                path = os.path.join(root, filename)
+                try:
+                    os.path.getsize(path)
+                except OSError as e:
+                    log(f"backup: skip unreadable {path}: {e!r}")
+                    continue
+                try:
+                    zipf.write(path)
+                    added += 1
+                except Exception as e:
+                    log(f"backup: failed to add {path}: {e!r}")
+
+    try:
+        size = os.path.getsize(archive_name)
+    except OSError:
+        size = 0
+    log(f"backup: FILES ZIP READY name={archive_name} files={added} size={size} bytes")
+
+    if size <= max_bytes:
+        return archive_name, added, size
+
+    log(f"backup: FILES ZIP too large ({size} bytes), will split")
+    try:
+        os.remove(archive_name)
+    except Exception:
+        pass
+    return None, added, size
 
 def backup_make_files_splits(max_part_bytes: int = MAX_PART_BYTES):
     """
@@ -1454,7 +1507,7 @@ def backup_make_files_splits(max_part_bytes: int = MAX_PART_BYTES):
         if zipf is not None:
             zipf.close()
         archive_name = f"backup_files_{base_date}_part{part_idx}.zip"
-        zipf = zipfile.ZipFile(archive_name, "w", zipfile.ZIP_DEFLATED)
+        zipf = zipfile.ZipFile(archive_name, "w", zipfile.ZIP_DEFLATED, compresslevel=ZIP_COMPRESSLEVEL)
         parts.append(archive_name)
         current_size = 0
         log(f"backup: opened {archive_name}")
@@ -1490,13 +1543,23 @@ def backup_make_files_splits(max_part_bytes: int = MAX_PART_BYTES):
                 new_zip()
                 continue
 
-            # Если файл не помещается — начинаем новый архив
-            if current_size + file_size > max_part_bytes:
+            # Если уже набрали лимит — начинаем новый архив
+            if current_size >= max_part_bytes:
                 new_zip()
 
             try:
                 zipf.write(path)
-                current_size += file_size
+                try:
+                    zipf.fp.flush()
+                except Exception:
+                    pass
+                try:
+                    current_size = zipf.fp.tell()
+                except Exception:
+                    try:
+                        current_size = os.path.getsize(archive_name)
+                    except Exception:
+                        current_size += file_size
                 added += 1
             except Exception as e:
                 log(f"backup: failed to add {path}: {e!r}")
@@ -1537,20 +1600,27 @@ def backup_databases_and_files_split():
         send_file_to_admin(db_zip, caption="Backup DB ✅")
         log("backup: DB SENT")
 
-        # 2) files/ (split)
-        parts, added_files = backup_make_files_splits(MAX_PART_BYTES)
-        created.extend(parts)
-
-        if parts:
-            total_parts = len(parts)
-            log(f"backup: sending {total_parts} file parts, files_count={added_files}")
-            for i, part in enumerate(parts, 1):
-                size = os.path.getsize(part)
-                caption = f"Backup files ✅ ({i}/{total_parts})\nSize: {size} bytes"
-                send_file_to_admin(part, caption=caption)
-                log(f"backup: SENT {part} ({i}/{total_parts})")
+        # 2) files/ (try single zip, else split)
+        files_zip, added_files, size = backup_make_files_zip_single(MAX_PART_BYTES)
+        if files_zip:
+            created.append(files_zip)
+            caption = f"Backup files ✅\nSize: {size} bytes"
+            send_file_to_admin(files_zip, caption=caption)
+            log(f"backup: SENT {files_zip}")
         else:
-            log("backup: no files parts to send")
+            parts, added_files = backup_make_files_splits(MAX_PART_BYTES)
+            created.extend(parts)
+
+            if parts:
+                total_parts = len(parts)
+                log(f"backup: sending {total_parts} file parts, files_count={added_files}")
+                for i, part in enumerate(parts, 1):
+                    size = os.path.getsize(part)
+                    caption = f"Backup files ✅ ({i}/{total_parts})\nSize: {size} bytes"
+                    send_file_to_admin(part, caption=caption)
+                    log(f"backup: SENT {part} ({i}/{total_parts})")
+            else:
+                log("backup: no files parts to send")
 
         backup_cleanup(created)
         log("backup: DONE")
