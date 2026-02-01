@@ -168,6 +168,8 @@ def handle_query(call):
         self_reject(call, int(call.data.split("_")[-1]), True)
     elif call.data.startswith("admin_panel_open"):
         admin_panel(call)
+    elif call.data.startswith("admin_panel_backup"):
+        admin_backup(call)
     elif call.data.startswith("admin_panel_stop"):
         stop(call)
     elif call.data.startswith("admin_panel_ban"):
@@ -1257,6 +1259,7 @@ def admin_panel(call):
     wtf_markup = types.InlineKeyboardMarkup()
 
     # markup.row(types.InlineKeyboardButton("🔒 Заблокировать", callback_data=f'admin_panel_ban'), types.InlineKeyboardButton("🔓 Разблокировать", callback_data=f'admin_panel_unban'))
+    markup.add(types.InlineKeyboardButton("📦 Отправить бэкап", callback_data="admin_panel_backup"))
     markup.add(types.InlineKeyboardButton("🛑 Остановить бота", callback_data="admin_panel_conf_stop"))
     markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
     wtf_markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
@@ -1266,6 +1269,12 @@ def admin_panel(call):
     else:
         bot.edit_message_text(f"""Подожди, подожди, подожди. Как ты это сделал?!?!?!""", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=wtf_markup)
         bot.send_message(config["admin_id"], f"❗️❗️СРОЧНО❗️❗️\n\nПользователь {call.from_user.id} ({sql_return.get_user_name(call.from_user.id)}) попытался попасть в панель админа")
+
+def admin_backup(call):
+    if call.from_user.id != config["admin_id"]:
+        return
+    bot.send_message(call.message.chat.id, "Запускаю бэкап, сейчас пришлю архивы.")
+    Thread(target=backup_databases_and_files_split, daemon=True).start()
 
 broadcast("✅ Бот снова работает!")
 
