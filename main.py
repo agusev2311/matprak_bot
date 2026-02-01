@@ -8,7 +8,8 @@ import sorting_123
 import json
 import os
 from dateutil.relativedelta import relativedelta
-from threading import Thread
+from threading import Thread, Lock
+from collections import Counter
 import prog
 import zipfile
 
@@ -1289,10 +1290,116 @@ def infinite_update():
 # === Settings ===
 # Держи меньше лимита Telegram (на практике часто режут по 20–40MB).
 MAX_PART_BYTES = 20 * 1024 * 1024  # 20 MB
+ERROR_ADMIN_SILENCE_SECONDS = 60 * 10
+POLLING_RETRY_SLEEP_SECONDS = 5
+POLLING_BACKOFF_MAX_SECONDS = 60
+
+error_stats_lock = Lock()
+error_counts = Counter()
+error_stats_since = datetime.datetime.now()
+last_admin_error_at = {}
 
 def log(msg: str) -> None:
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{now}] {msg}", flush=True)
+
+def normalize_error_message(msg: str) -> str:
+    return " ".join(msg.split())
+
+def error_signature(context: str, msg: str) -> str:
+    clean_msg = normalize_error_message(msg)
+    if len(clean_msg) > 200:
+        clean_msg = f"{clean_msg[:200]}..."
+    return f"{context}: {clean_msg}"
+
+def is_transient_polling_error(msg: str) -> bool:
+    msg_l = msg.lower()
+    for substr in (
+        "remote end closed connection without response",
+        "remote disconnected",
+        "connection aborted",
+        "read timed out",
+        "connect timeout",
+        "connection reset by peer",
+        "max retries exceeded",
+        "temporarily unavailable",
+        "bad status line",
+        "eof occurred in violation of protocol",
+    ):
+        if substr in msg_l:
+            return True
+    return False
+
+def record_error(signature: str) -> None:
+    global error_stats_since
+    now = datetime.datetime.now()
+    with error_stats_lock:
+        if not error_counts:
+            error_stats_since = now
+        error_counts[signature] += 1
+
+def append_error_log(line: str) -> None:
+    try:
+        with open("polling_errors.log", "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
+def notify_admin_rate_limited(signature: str, message: str) -> None:
+    now = time.time()
+    last = last_admin_error_at.get(signature, 0)
+    if now - last < ERROR_ADMIN_SILENCE_SECONDS:
+        return
+    last_admin_error_at[signature] = now
+    try:
+        bot.send_message(config["admin_id"], f"Произошла ошибка: {message}")
+    except Exception:
+        log("error: failed to notify admin about error")
+
+def consume_error_stats():
+    global error_stats_since
+    with error_stats_lock:
+        snapshot = dict(error_counts)
+        error_counts.clear()
+        since = error_stats_since
+        error_stats_since = datetime.datetime.now()
+    return since, error_stats_since, snapshot
+
+def send_daily_error_summary(only_if_errors: bool = True) -> None:
+    since, until, snapshot = consume_error_stats()
+    if only_if_errors and not snapshot:
+        return
+    if not snapshot:
+        summary = (
+            "Ежедневная статистика ошибок "
+            f"({since.strftime('%Y-%m-%d %H:%M:%S')} – {until.strftime('%Y-%m-%d %H:%M:%S')}): "
+            "ошибок нет ✅"
+        )
+    else:
+        lines = [
+            "Ежедневная статистика ошибок "
+            f"({since.strftime('%Y-%m-%d %H:%M:%S')} – {until.strftime('%Y-%m-%d %H:%M:%S')})"
+        ]
+        for sig, count in sorted(snapshot.items(), key=lambda x: -x[1])[:20]:
+            lines.append(f"{count}× {sig}")
+        summary = "\n".join(lines)
+    try:
+        bot.send_message(config["admin_id"], summary)
+    except Exception:
+        log("error: failed to send daily error summary")
+
+def handle_polling_error(e: Exception) -> None:
+    msg = str(e)
+    signature = error_signature("polling", msg)
+    log(f"polling error: {msg}")
+    record_error(signature)
+    append_error_log(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {signature}")
+    try:
+        sql_return.bug_report(signature)
+    except Exception:
+        pass
+    if not is_transient_polling_error(msg):
+        notify_admin_rate_limited(signature, msg)
 
 def safe_int(x, default=0) -> int:
     try:
@@ -1451,6 +1558,7 @@ def backup_databases_and_files_split():
 def backup_scheduler():
     # Сразу один бэкап при старте
     backup_databases_and_files_split()
+    send_daily_error_summary(only_if_errors=True)
 
     while is_polling:
         now = datetime.datetime.now()
@@ -1465,21 +1573,19 @@ def backup_scheduler():
             break
 
         backup_databases_and_files_split()
+        send_daily_error_summary(only_if_errors=True)
 
 # Запуск планировщика в отдельном потоке
 backup_thread = Thread(target=backup_scheduler, daemon=True)
 backup_thread.start()
 
+backoff_seconds = POLLING_RETRY_SLEEP_SECONDS
 while is_polling:
-    print("polling started")
-    bot.polling(none_stop=True)
+    log("polling started")
     try:
         bot.polling(none_stop=True)
+        backoff_seconds = POLLING_RETRY_SLEEP_SECONDS
     except Exception as e:
-        sql_return.bug_report(str(e))
-        try:
-            if str(e) != "HTTPSConnectionPool(host='api.telegram.org', port=443): Read timed out. (read timeout=25)":
-                bot.send_message(config["admin_id"], f"Произошла ошибка: {str(e)}")
-        except:
-            print(f"report error")
-        print(f"polling error: {str(e)}")
+        handle_polling_error(e)
+        time.sleep(backoff_seconds)
+        backoff_seconds = min(backoff_seconds * 2, POLLING_BACKOFF_MAX_SECONDS)
