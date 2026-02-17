@@ -233,6 +233,29 @@ def task_info(task_id: int):
         cursor.execute('''SELECT * FROM tasks WHERE id = ?''', (task_id, ))
         return cursor.fetchone()
 
+def get_task_status(task_id: int) -> Optional[str]:
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT status FROM tasks WHERE id=?", (task_id,))
+        row = cursor.fetchone()
+        return row[0] if row else None
+
+def set_task_status(task_id: int, status: str) -> bool:
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE tasks SET status=? WHERE id=?", (status, task_id))
+        conn.commit()
+        return cursor.rowcount > 0
+
+def toggle_task_status(task_id: int) -> Optional[str]:
+    current_status = get_task_status(task_id)
+    if current_status is None:
+        return None
+
+    new_status = "close" if current_status == "open" else "open"
+    updated = set_task_status(task_id, new_status)
+    return new_status if updated else None
+
 def new_student_answer(task_id: int, student_id: int, answer_text: str, files_id: str = None):
     with sqlite3.connect(config["db-name"]) as conn:
         cursor = conn.cursor()

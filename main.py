@@ -732,6 +732,13 @@ def handle_query(call):
         course_content(call, int(call.data.split('_')[-2]), int(call.data.split("_")[-1]))
     elif call.data.startswith("gpt_add_lesson_"):
         gpt_add_lesson_start(call, int(call.data.split("_")[-1]))
+    elif call.data.startswith("toggle_task_"):
+        toggle_task_open_close(
+            call,
+            int(call.data.split('_')[-3]),
+            int(call.data.split('_')[-2]),
+            int(call.data.split('_')[-1]),
+        )
     elif call.data.startswith("lesson_"):
         lesson_content(call, int(call.data.split('_')[-3]), int(call.data.split('_')[-2]), int(call.data.split("_")[-1]))
     elif call.data.startswith("task_"):
@@ -838,8 +845,6 @@ def mm_send_lesson(call, course_id, page=0):
         bot.send_message(call.message.chat.id, "Вы не зарегистрированы.")
         return
 
-    is_admin = str(call.from_user.id) == config["admin_id"]
-
     lessons = sql_return.lessons_in_course(course_id)
 
     if not lessons:  # Проверяем, что уроки существуют
@@ -877,8 +882,6 @@ def mm_send_task(call, course_id, lesson_id, page=0):
     if not user:
         bot.send_message(call.message.chat.id, "Вы не зарегистрированы.")
         return
-
-    is_admin = str(call.from_user.id) == config["admin_id"]
 
     tasks_temp = sql_return.tasks_in_lesson(lesson_id)
     tasks = []
@@ -1608,14 +1611,15 @@ def task_info(call, task_id, lesson_id, course_id):
     task = sql_return.task_info(task_id)
     
     if task:
-        task_id, lesson_id, task_title, task_status, task_deadline, task_description = task
+        task_id, lesson_id, task_title, raw_task_status, task_deadline, task_description = task
 
         status_translation = {
             'open': 'Открыт',
-            'close': 'Архивирован',
+            'close': 'Закрыт',
+            'arc': 'Закрыт',
             'dev': 'В разработке'
         }
-        task_status = status_translation.get(task_status, 'Неизвестен')
+        task_status = status_translation.get(raw_task_status, 'Неизвестен')
         
         if task_deadline:
             # Преобразуем временную метку в объект datetime
@@ -1649,6 +1653,11 @@ def task_info(call, task_id, lesson_id, course_id):
                              f"📝 <b>Текст задачи</b>: {task_description if task_description else 'Нет текста задачи'}")
         
         markup = types.InlineKeyboardMarkup()
+        is_admin = str(call.from_user.id) == str(config["admin_id"])
+        is_dev = sql_return.is_course_dev(call.from_user.id, sql_return.developers_list(course_id))
+        if is_admin or is_dev:
+            toggle_task_text = "🔒 Закрыть задачу" if raw_task_status == "open" else "🔓 Открыть задачу"
+            markup.add(types.InlineKeyboardButton(toggle_task_text, callback_data=f"toggle_task_{course_id}_{lesson_id}_{task_id}"))
         markup.add(types.InlineKeyboardButton("🔙 К списку задач", callback_data=f"lesson_{course_id}_{lesson_id}_0"))
 
         bot.edit_message_text(task_info_message, 
@@ -1660,6 +1669,27 @@ def task_info(call, task_id, lesson_id, course_id):
         bot.edit_message_text("❗️ Задача не найдена", 
                               chat_id=call.message.chat.id, 
                               message_id=call.message.message_id)
+
+def toggle_task_open_close(call, course_id, lesson_id, task_id):
+    user = sql_return.find_user_id(call.from_user.id)
+
+    if not user:
+        bot.send_message(call.message.chat.id, "Вы не зарегистрированы.")
+        return
+
+    is_admin = str(call.from_user.id) == str(config["admin_id"])
+    is_dev = sql_return.is_course_dev(call.from_user.id, sql_return.developers_list(course_id))
+    if not (is_admin or is_dev):
+        bot.send_message(call.message.chat.id, "У вас нет прав на изменение статуса задачи.")
+        return
+
+    new_status = sql_return.toggle_task_status(task_id)
+    if new_status is None:
+        bot.send_message(call.message.chat.id, "Задача не найдена.")
+        return
+
+    sql_return.log_action(call.from_user.id, "toggle_task_status", f"{task_id} {new_status}")
+    task_info(call, task_id, lesson_id, course_id)
 
 def create_course(call):
     bot.edit_message_text(f"""🎓 Вы создаёте курс.
