@@ -74,6 +74,91 @@ def get_course_title(course_id: int) -> str:
     return str(course[1])
 
 
+def normalize_user_action_text(value, max_len: int = 240) -> str:
+    text = " ".join(str(value).split())
+    if len(text) > max_len:
+        return f"{text[:max_len - 3]}..."
+    return text
+
+
+def format_user_for_log(from_user) -> str:
+    user_id = getattr(from_user, "id", "unknown")
+    username = getattr(from_user, "username", None)
+    telegram_name = " ".join(
+        part
+        for part in [getattr(from_user, "first_name", ""), getattr(from_user, "last_name", "")]
+        if part
+    ).strip()
+
+    db_name = ""
+    try:
+        db_user = sql_return.get_user_name(int(user_id))
+        if db_user:
+            db_name = " ".join(part for part in db_user if part).strip()
+    except Exception:
+        db_name = ""
+
+    resolved_name = db_name or telegram_name or "unknown_name"
+    username_part = f"@{username}" if username else "no_username"
+    return f"{resolved_name} ({username_part}, id={user_id})"
+
+
+def log_user_action(from_user, action: str, details: str = "") -> None:
+    safe_action = normalize_user_action_text(action, 120)
+    safe_details = normalize_user_action_text(details)
+    message = f"user_action: {safe_action} | {format_user_for_log(from_user)}"
+    if safe_details:
+        message += f" | {safe_details}"
+    log(message)
+
+
+def callback_action_name(callback_data: str) -> str:
+    action_map = (
+        ("reg_approve_", "registration.approve"),
+        ("reg_deny_", "registration.deny"),
+        ("reg_ban_", "registration.ban"),
+        ("mm_send", "menu.send"),
+        ("mm_check", "menu.check"),
+        ("mm_courses_", "menu.courses"),
+        ("mm_answers_", "menu.answers"),
+        ("mm_main_menu", "menu.main"),
+        ("course_", "course.open"),
+        ("add_student_", "course.add_student_prompt"),
+        ("add_developer_", "course.add_developer_prompt"),
+        ("content_", "course.content"),
+        ("gpt_add_lesson_", "gpt_lesson.start"),
+        ("toggle_task_", "task.toggle_status"),
+        ("lesson_", "lesson.open"),
+        ("task_", "task.open"),
+        ("send-course_", "solution.select_course"),
+        ("send-task_", "solution.select_lesson"),
+        ("send-final_", "solution.select_task"),
+        ("check-course-all_", "check.all_courses"),
+        ("check-course_", "check.course"),
+        ("check-add-comment_", "check.comment_prompt"),
+        ("check-final", "check.final_verdict"),
+        ("create_course", "course.create_prompt"),
+        ("create_lesson", "lesson.create_prompt"),
+        ("create_task", "task.create_prompt"),
+        ("solution", "solution.open"),
+        ("self_reject", "solution.self_reject"),
+        ("undo_self_reject", "solution.self_reject_undo"),
+        ("admin_panel_open", "admin.panel_open"),
+        ("admin_panel_backup", "admin.backup"),
+        ("admin_panel_stop", "admin.stop"),
+        ("admin_panel_ban", "admin.ban_prompt"),
+        ("admin_panel_unban", "admin.unban_prompt"),
+        ("admin_panel_conf_stop", "admin.stop_confirm"),
+        ("gptsql_accept_", "gpt_lesson.sql_accept"),
+        ("gptsql_reject_", "gpt_lesson.sql_reject"),
+        ("gptsql_retry_", "gpt_lesson.sql_retry"),
+    )
+    for prefix, action in action_map:
+        if callback_data.startswith(prefix):
+            return action
+    return "callback.unknown"
+
+
 def save_lesson_source_file(message):
     if message.content_type not in ("photo", "document"):
         raise ValueError("Нужно отправить фотографию листка или PDF-файл.")
@@ -466,6 +551,11 @@ def gpt_add_lesson_start(call, course_id: int):
 
 
 def gpt_add_lesson_receive_file(message, course_id: int):
+    log_user_action(
+        message.from_user,
+        "gpt_lesson.file_upload_input",
+        f"course_id={course_id}, content_type={message.content_type}"
+    )
     if message.content_type == "text":
         command = (message.text or "").strip().lower()
         if command in ["/cancel", "cancel", "отмена"]:
@@ -597,6 +687,11 @@ def gpt_sql_retry(call, request_id: int):
 
 
 def gpt_sql_retry_feedback(message, request_id: int):
+    log_user_action(
+        message.from_user,
+        "gpt_lesson.retry_feedback_input",
+        f"request_id={request_id}, text={message.text or ''}"
+    )
     if message.from_user.id != get_admin_id():
         bot.send_message(message.chat.id, "Только админ может отправлять SQL на доработку.")
         return
@@ -625,6 +720,7 @@ def gpt_sql_retry_feedback(message, request_id: int):
 
 @bot.message_handler(commands=["start"])
 def start(message):
+    log_user_action(message.from_user, "command.start")
     user = sql_return.find_user_id(message.from_user.id)
     if user and user[3] == "pending":
         bot.reply_to(message, "Вы уже подали заявку, ожидайте ответа администратора.")
@@ -649,10 +745,13 @@ def start(message):
         bot.register_next_step_handler(message, register_name)
 
 def register_name(message):
-    name = message.text.split()
+    raw_name = (message.text or "").strip()
+    log_user_action(message.from_user, "registration.name_input", f"text={raw_name}")
+    name = raw_name.split()
     if len(name) != 2:
         bot.reply_to(message, f"Вы ввели имя и фамилию неправильно. Введите их снова.")
         bot.register_next_step_handler(message, register_name)
+        sql_return.log_action(message.from_user.id, "register_invalid_name", raw_name)
     else:
         sql_return.reg_user(int(message.from_user.id), name[0], name[1])
 
@@ -664,10 +763,17 @@ def register_name(message):
         markup.add(button1)
         markup.add(button2, button3)
         bot.send_message(int(config["admin_id"]), f"@{message.from_user.username} ({message.from_user.id}) регистрируется как {name[0]} {name[1]}", reply_markup=markup)
-    sql_return.log_action(message.from_user.id, "register", f"{name[0]} {name[1]}")
+        sql_return.log_action(message.from_user.id, "register", f"{name[0]} {name[1]}")
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_query(call):
+    callback_data = call.data or ""
+    log_user_action(
+        call.from_user,
+        callback_action_name(callback_data),
+        f"callback_data={callback_data}"
+    )
+
     user = sql_return.find_user_id(call.from_user.id)
     if user and user[3] == "banned":
         bot.answer_callback_query(call.id, "Вы были забанены. Обратитесь к администратору")
@@ -966,6 +1072,11 @@ def mm_send_final(call, lesson_id, course_id, task_id):
 last_time_student_answer_dict = {}
 
 def mm_send_final_2(message, lesson_id, course_id, task_id, user_id):
+    log_user_action(
+        message.from_user,
+        "solution.submit_input",
+        f"task_id={task_id}, lesson_id={lesson_id}, course_id={course_id}, content_type={message.content_type}"
+    )
     if user_id not in last_time_student_answer_dict:
         last_time_student_answer_dict[user_id] = time.time()
     else:
@@ -1301,6 +1412,11 @@ def check_task(type: str, call, task_data, comment: str = "None"):
                     )
 
 def check_add_comment(message, call, type: str, task_id):
+    log_user_action(
+        message.from_user,
+        "check.comment_input",
+        f"type={type}, task_id={task_id}, text={message.text or ''}"
+    )
     task_data = sql_return.get_student_answer_from_id(task_id)
     comment = message.text
     comment_for_answer_dict[message.from_user.id] = comment
@@ -1469,6 +1585,11 @@ def add_student(call):
     bot.register_next_step_handler(call.message, lambda message: add_student_to_course(message, course_id))
 
 def add_student_to_course(message, course_id):
+    log_user_action(
+        message.from_user,
+        "course.add_student_input",
+        f"course_id={course_id}, student_id_raw={message.text or ''}"
+    )
     try:
         student_id = int(message.text)
         student = sql_return.find_user_id(student_id)
@@ -1495,6 +1616,11 @@ def add_developer(call):
     bot.register_next_step_handler(call.message, lambda message: add_developer_to_course(message, course_id))
 
 def add_developer_to_course(message, course_id):
+    log_user_action(
+        message.from_user,
+        "course.add_developer_input",
+        f"course_id={course_id}, developer_id_raw={message.text or ''}"
+    )
     try:
         developer_id = int(message.text)
         developer = sql_return.find_user_id(developer_id)
@@ -1703,6 +1829,11 @@ def create_course(call):
     bot.register_next_step_handler(call.message, create_course_name, call.message.message_id)
 
 def create_course_name(message, editing_message_id):
+    log_user_action(
+        message.from_user,
+        "course.create_name_input",
+        f"text={message.text or ''}"
+    )
     name = message.text
     bot.delete_message(message.chat.id, message.message_id)
     bot.edit_message_text(f"""🎓 Вы создаёте курс.
@@ -1716,6 +1847,11 @@ def create_course_name(message, editing_message_id):
     bot.register_next_step_handler(message, create_course_developers, editing_message_id, name)
 
 def create_course_developers(message, editing_message_id, course_name):
+    log_user_action(
+        message.from_user,
+        "course.create_developers_input",
+        f"course_name={course_name}, text={message.text or ''}"
+    )
     developers = message.text.split()
     bot.delete_message(message.chat.id, message.message_id)
 
@@ -1768,6 +1904,11 @@ def create_lesson(call):
     bot.register_next_step_handler(call.message, create_lesson_name, call.message.message_id, call.data.split('_')[-1])
 
 def create_lesson_name(message, editing_message_id, course_id):
+    log_user_action(
+        message.from_user,
+        "lesson.create_name_input",
+        f"course_id={course_id}, text={message.text or ''}"
+    )
     name = message.text
     bot.delete_message(message.chat.id, message.message_id)
     sql_return.create_lesson(course_id, name)
@@ -1787,6 +1928,11 @@ def create_task(call):
     bot.register_next_step_handler(call.message, create_task_name, call.message.message_id, call.data.split('_')[-2], call.data.split('_')[-1])
 
 def create_task_name(message, editing_message_id, lesson_id, course_id):
+    log_user_action(
+        message.from_user,
+        "task.create_name_input",
+        f"course_id={course_id}, lesson_id={lesson_id}, text={message.text or ''}"
+    )
     task_name = message.text
     bot.delete_message(message.chat.id, message.message_id)
     bot.edit_message_text(f"""🎓 Вы создаёте задачу.
@@ -1799,6 +1945,11 @@ def create_task_name(message, editing_message_id, lesson_id, course_id):
     bot.register_next_step_handler(message, create_task_description, editing_message_id, lesson_id, course_id, task_name)
 
 def create_task_description(message, editing_message_id, lesson_id, course_id, task_name):
+    log_user_action(
+        message.from_user,
+        "task.create_description_input",
+        f"course_id={course_id}, lesson_id={lesson_id}, task_name={task_name}, text={message.text or ''}"
+    )
     task_description = message.text
     bot.delete_message(message.chat.id, message.message_id)
     sql_return.create_task(lesson_id, course_id, task_name, task_description)
@@ -1809,10 +1960,12 @@ def create_task_description(message, editing_message_id, lesson_id, course_id, t
 
 @bot.message_handler(commands=["support"])
 def support(message):
+    log_user_action(message.from_user, "command.support")
     bot.reply_to(message, f"Поддержка находится в лс у @agusev2311")
 
 @bot.message_handler(commands=["help"])
 def help(message):
+    log_user_action(message.from_user, "command.help")
     text = """Список всех команд в боте и faq:
 Команды:
 /start - регистрация или главное меню
@@ -1825,6 +1978,7 @@ def help(message):
 
 @bot.message_handler(commands=["why_only_one_file"])
 def why_only_one_file(message):
+    log_user_action(message.from_user, "command.why_only_one_file")
     text = """Вы можете прикрепить к решению не более одного файла (документ или изображение).
 
 Это ограничение связано с тем, что:
@@ -1850,6 +2004,11 @@ def ban(call):
     bot.register_next_step_handler(call, ban_enter)
 
 def ban_enter(call):
+    log_user_action(
+        call.from_user,
+        "admin.ban_input",
+        f"target_ids={call.message.text or ''}"
+    )
     for user in call.message.text.split():
         sql_return.set_user_status(user, "banned")
     sql_return.log_action(call.from_user.id, "ban", f"{call.message.text.split()}")
@@ -1862,9 +2021,14 @@ def unban(call):
     bot.register_next_step_handler(call, unban_enter)
 
 def unban_enter(call):
+    log_user_action(
+        call.from_user,
+        "admin.unban_input",
+        f"target_ids={call.message.text or ''}"
+    )
     for user in call.message.text.split():
         sql_return.set_user_status(user, "approved")
-    sql_return.log_action(call.from_user.id, "ban", f"{call.message.text.split()}")
+    sql_return.log_action(call.from_user.id, "unban", f"{call.message.text.split()}")
     bot.send_message(call.message.chat.id, "Пользователи разбанены")
 
 def stop_confirm(call):
