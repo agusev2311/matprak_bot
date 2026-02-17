@@ -78,17 +78,24 @@ def _strip_markdown_fences(output_text: str) -> str:
 
 
 def _normalize_task_label(label: str) -> str:
-    cleaned = re.sub(r"\s+", "", (label or "").strip())
-    if cleaned.endswith(".") or cleaned.endswith(")"):
-        cleaned = cleaned[:-1]
+    cleaned = (label or "").strip().lower()
+    cleaned = cleaned.replace("−", "-")
+    cleaned = re.sub(r"\s+", "", cleaned)
+    cleaned = re.sub(r"^[\(\[]+", "", cleaned)
+    cleaned = re.sub(r"[\)\].,:;]+$", "", cleaned)
+    cleaned = cleaned.replace("-", "")
 
-    match = re.fullmatch(r"(\d+)(\*)?", cleaned)
+    # Поддерживаем форматы:
+    # 1, 1*, 2a, 2а, 2a*, 2а*, 2*a, 2*а
+    match = re.fullmatch(r"(\d+)(\*)?([a-zа-яё])?(\*)?", cleaned)
     if not match:
         return ""
 
     number = match.group(1)
-    suffix = "*" if match.group(2) else ""
-    return f"{number}{suffix}"
+    letter = match.group(3) or ""
+    has_star = bool(match.group(2) or match.group(4))
+    star = "*" if has_star else ""
+    return f"{number}{letter}{star}"
 
 
 def _deduplicate_labels(labels: list[str]) -> list[str]:
@@ -249,7 +256,20 @@ def _append_missing_tasks_to_sql(sql_text: str, missing_tasks: dict[str, str]) -
 
 def _parse_task_labels_from_text(text: str) -> list[str]:
     cleaned = _strip_markdown_fences(text)
-    labels = re.findall(r"(?<!\d)(\d+\s*\*?)(?!\d)", cleaned)
+    labels = []
+
+    for line in cleaned.splitlines():
+        line_clean = line.strip()
+        if not line_clean:
+            continue
+        line_clean = re.sub(r"^[\-\*\u2022\s]+", "", line_clean)
+        match = re.match(r"^(\d+\s*\*?\s*[A-Za-zА-Яа-яЁё]?\s*\*?)", line_clean)
+        if match:
+            labels.append(match.group(1))
+
+    if not labels:
+        labels = re.findall(r"(?<!\d)(\d+\s*\*?\s*[A-Za-zА-Яа-яЁё]?\s*\*?)(?!\d)", cleaned)
+
     return _deduplicate_labels(labels)
 
 
@@ -293,18 +313,23 @@ tasks:
 2) Сначала создай ОДИН новый урок в таблице lessons.
 3) Затем создай задачи в таблице tasks, связанные с этим уроком.
 4) Для lessons.status и tasks.status ставь 'open'.
-5) Вставляй только те задачи, у которых номер начинается с числа
-   (например: 1, 2, 3, 7*). Буквенные пункты и подпункты без числового номера игнорируй.
-6) Используй корректный id урока:
+5) Вставляй задачи, у которых номер начинается с числа.
+   Примеры корректных номеров: 1, 2, 7*, 2a, 2b, 2c, 2а, 2б, 2в.
+6) Если у задачи есть подпункты с буквами, каждый подпункт нужно добавить как ОТДЕЛЬНУЮ задачу.
+   То есть 2а, 2б, 2в — это три разные задачи.
+7) Буквенные пункты без числовой части (например просто "а") не добавляй.
+8) Используй корректный id урока:
    - либо через подзапрос с MAX(id),
    - либо через явный id, который соответствует следующему доступному id.
-7) Для каждой задачи:
-   - title: короткий номер задачи (например, '1', '2', '3*')
+9) Для каждой задачи:
+   - title: короткий номер задачи (например, '1', '2', '3*', '2a', '2б')
    - description: полный текст задачи
-8) ОБЯЗАТЕЛЬНО проверь перед ответом, что ни один номер задачи не пропущен.
-9) НЕ используй колонки text, number, name и любые другие, которых нет в схеме выше.
-10) Не используй DELETE, DROP, ALTER, UPDATE.
-11) Не добавляй комментарии и пояснения.
+10) Обязательно сохраняй тот же алфавит, что на листке:
+    если на листке 2а/2б (кириллица), не меняй на 2a/2b.
+11) ОБЯЗАТЕЛЬНО проверь перед ответом, что ни один номер задачи/подзадачи не пропущен.
+12) НЕ используй колонки text, number, name и любые другие, которых нет в схеме выше.
+13) Не используй DELETE, DROP, ALTER, UPDATE.
+14) Не добавляй комментарии и пояснения.
 
 Ответ верни ТОЛЬКО SQL-запросами, без markdown.
 """.strip()
@@ -350,11 +375,13 @@ tasks(id, lesson_id, title, status, deadline, description)
 3) Не используй DELETE, DROP, ALTER, UPDATE.
 4) Сначала INSERT в lessons, затем INSERT в tasks.
 5) Для lessons.status и tasks.status ставь 'open'.
-6) Добавляй только задачи с числовым номером.
-7) Для задач используй только колонки: lesson_id, title, status, description (deadline опционально).
-8) НИКОГДА не используй колонки text, number, name.
-9) title должен быть номером задачи, description должен быть полным текстом.
-10) ОБЯЗАТЕЛЬНО проверь, что ни один номер задачи не пропущен.
+6) Добавляй задачи с числовым началом номера: 1, 2, 2a, 2б, 7* и т.п.
+7) Подпункты с буквами (например 2a/2b/2c или 2а/2б/2в) добавляй как отдельные задачи.
+8) Для задач используй только колонки: lesson_id, title, status, description (deadline опционально).
+9) НИКОГДА не используй колонки text, number, name.
+10) title должен быть номером задачи/подзадачи, description должен быть полным текстом.
+11) Сохраняй алфавит как в листке: латиница/кириллица не взаимозаменяемы.
+12) ОБЯЗАТЕЛЬНО проверь, что ни один номер задачи или буквенный подпункт не пропущен.
 """.strip()
 
 
@@ -363,17 +390,19 @@ def _build_labels_audit_prompt(audit_mode: str) -> str:
         return """
 Проведи ПОВТОРНУЮ ПРОВЕРКУ листка снизу вверх и по краям.
 Особенно ищи номера со звездочкой (например 1*, 2*) и пункты,
-которые легко пропустить.
+которые легко пропустить. Подпункты с буквами (2a/2b или 2а/2б)
+считай отдельными задачами.
 
 Верни только номера задач, по одному номеру в строке.
-Формат номера: 1 или 1*.
+Формат номера: 1, 1*, 2a, 2b, 2а, 2б.
 Никакого дополнительного текста.
 """.strip()
 
     return """
 Проанализируй листок с задачами сверху вниз.
 Верни ВСЕ номера задач, по одному номеру в строке.
-Формат номера: 1 или 1*.
+Подпункты с буквами добавляй отдельными строками: 2a, 2b или 2а, 2б.
+Формат номера: 1, 1*, 2a, 2b, 2а, 2б.
 Никакого дополнительного текста.
 """.strip()
 
