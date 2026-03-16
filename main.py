@@ -2011,9 +2011,9 @@ def vpn_stats(message):
         process_network_receive_bytes_total, process_network_transmit_bytes_total = -1, -1
         for i in txt.split("\n"):
             if i.startswith("process_network_receive_bytes_total"):
-                process_network_receive_bytes_total = int(i.split()[1])
+                process_network_receive_bytes_total = int(float(i.split()[1]))
             elif i.startswith("process_network_transmit_bytes_total"):
-                process_network_transmit_bytes_total = int(i.split()[1])
+                process_network_transmit_bytes_total = int(float(i.split()[1]))
         
         def human_readable_binary(bytes_count):
             """
