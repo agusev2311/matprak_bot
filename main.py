@@ -2000,40 +2000,66 @@ def why_only_one_file(message):
 
 @bot.message_handler(commands=["vpnstats"])
 def vpn_stats(message):
+    print("vpnstats handler called")
+    print("chat id:", message.chat.id)
+
     users = [962799806, 1133611562]
-    if  not int(message.chat.id) in users:
-        bot.send_message(message.chat.id, "uhhh brooo... no. just no. okay? check this pls ZmxhZ3tmckVlX3ZQbl9sb2xlfQ")
+
+    if int(message.chat.id) not in users:
+        print("user not allowed")
+        bot.send_message(message.chat.id, "no access")
         return
-    
+
     try:
-        req = requests.get("http://localhost:9090/metrics")
+        print("before requests.get")
+        req = requests.get("http://localhost:9090/metrics", timeout=5)
+        print("status:", req.status_code)
+
         txt = req.text
-        process_network_receive_bytes_total, process_network_transmit_bytes_total = -1, -1
+        print("metrics length:", len(txt))
+
+        process_network_receive_bytes_total = -1
+        process_network_transmit_bytes_total = -1
+
         for i in txt.split("\n"):
             if i.startswith("process_network_receive_bytes_total"):
                 process_network_receive_bytes_total = int(float(i.split()[1]))
             elif i.startswith("process_network_transmit_bytes_total"):
                 process_network_transmit_bytes_total = int(float(i.split()[1]))
-        
+
+        print("recv:", process_network_receive_bytes_total)
+        print("send:", process_network_transmit_bytes_total)
+
         def human_readable_binary(bytes_count):
-            """
-            Convert bytes to KiB, MiB, GiB, or TiB (powers of 1024).
-            """
-            units = ["B", "KiB", "MiB", "GiB", "TiB"]
-            # Determine the appropriate unit index using logarithms
             import math
+            units = ["B", "KiB", "MiB", "GiB", "TiB"]
+
             if bytes_count == 0:
                 return "0 B"
+            if bytes_count < 0:
+                return "N/A"
+
             power = int(math.floor(math.log(bytes_count, 1024)))
-            power = min(power, len(units) - 1) # Ensure index is within range
+            power = min(power, len(units) - 1)
             value = bytes_count / (1024 ** power)
             return f"{value:.2f} {units[power]}"
 
-        msg = f"""VPN STATS
-receive: {human_readable_binary(process_network_receive_bytes_total)} ({process_network_receive_bytes_total} bytes)
-transmit: {human_readable_binary(process_network_transmit_bytes_total)} ({process_network_transmit_bytes_total} bytes)"""
-    except:
-        bot.send_message(message.chat.id, "something went wrong TwT")
+        msg = (
+            f"VPN STATS\n"
+            f"receive: {human_readable_binary(process_network_receive_bytes_total)} "
+            f"({process_network_receive_bytes_total} bytes)\n"
+            f"transmit: {human_readable_binary(process_network_transmit_bytes_total)} "
+            f"({process_network_transmit_bytes_total} bytes)"
+        )
+
+        print("message to send:", msg)
+        bot.send_message(message.chat.id, msg)
+        print("message sent")
+
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        bot.send_message(message.chat.id, f"something went wrong TwT\n{e}")
 
 
 def ban(call):
