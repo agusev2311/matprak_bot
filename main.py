@@ -12,6 +12,7 @@ from threading import Thread, Lock
 from collections import Counter
 import prog
 import zipfile
+import requests
 
 print("main.py started")
 
@@ -1196,6 +1197,44 @@ def why_only_one_file(message):
 ⚠️ Обратите внимание: каждый запрос в техподдержку требует моего времени. Если проблема связана с базой данных (как в данном случае), потребуется остановка работы бота. Если вы будете обращаться в техподдержку без веской причины, например, просто для прикрепления дополнительных файлов к решению, к вам могут быть применены ограничения. Пожалуйста, будьте внимательны, уважайте других пользователей и меня.
 """
     bot.send_message(message.chat.id, text)
+
+@bot.message_handler(commands=["vpnstats"])
+def vpn_stats(message):
+    users = [962799806, 1133611562]
+    if  not int(message.chat.id) in users:
+        bot.send_message(message.chat.id, "uhhh brooo... no. just no. okay? check this pls ZmxhZ3tmckVlX3ZQbl9sb2xlfQ")
+        return
+    
+    try:
+        req = requests.get("http://localhost:9090/metrics")
+        txt = req.text
+        process_network_receive_bytes_total, process_network_transmit_bytes_total = -1, -1
+        for i in txt.split("\n"):
+            if i.startswith("process_network_receive_bytes_total"):
+                process_network_receive_bytes_total = int(i.split()[1])
+            elif i.startswith("process_network_transmit_bytes_total"):
+                process_network_transmit_bytes_total = int(i.split()[1])
+        
+        def human_readable_binary(bytes_count):
+            """
+            Convert bytes to KiB, MiB, GiB, or TiB (powers of 1024).
+            """
+            units = ["B", "KiB", "MiB", "GiB", "TiB"]
+            # Determine the appropriate unit index using logarithms
+            import math
+            if bytes_count == 0:
+                return "0 B"
+            power = int(math.floor(math.log(bytes_count, 1024)))
+            power = min(power, len(units) - 1) # Ensure index is within range
+            value = bytes_count / (1024 ** power)
+            return f"{value:.2f} {units[power]}"
+
+        msg = f"""VPN STATS
+receive: {human_readable_binary(process_network_receive_bytes_total)} ({process_network_receive_bytes_total} bytes)
+transmit: {human_readable_binary(process_network_transmit_bytes_total)} ({process_network_transmit_bytes_total} bytes)"""
+    except:
+        bot.send_message(message.chat.id, "something went wrong TwT")
+
 
 def ban(call):
     if call.from_user.id != config["admin_id"]:
