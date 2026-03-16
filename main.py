@@ -3,14 +3,18 @@ from telebot import types
 import sqlite3
 import time
 import datetime
+import html
+import io
+import re
 import sql_return
 import sorting_123
 import json
 import os
+import parsing_gpt
 from dateutil.relativedelta import relativedelta
 from threading import Thread, Lock
 from collections import Counter
-import prog
+# import prog
 import zipfile
 import requests
 
@@ -26,8 +30,698 @@ is_polling = True
 
 bot = telebot.TeleBot(config["tg-token"])
 
+GPT_SQL_ALLOWED_EXTRA_USER_ID = 930442932
+MAX_UPLOAD_SIZE_BYTES = 15 * 1024 * 1024
+
+gpt_sql_requests_lock = Lock()
+gpt_sql_requests = {}
+gpt_sql_request_seq = 0
+
+TASKS_COLUMN_ALIASES = {
+    "text": "description",
+    "task_text": "description",
+    "problem_text": "description",
+    "number": "title",
+    "task_number": "title",
+    "name": "title",
+}
+
+LESSONS_COLUMN_ALIASES = {
+    "name": "title",
+    "lesson_name": "title",
+    "text": "title",
+    "state": "status",
+}
+
+def get_admin_id() -> int:
+    return int(config["admin_id"])
+
+
+def can_use_gpt_lesson_button(user_id: int) -> bool:
+    return int(user_id) in {get_admin_id(), GPT_SQL_ALLOWED_EXTRA_USER_ID}
+
+
+def next_gpt_sql_request_id() -> int:
+    global gpt_sql_request_seq
+    with gpt_sql_requests_lock:
+        gpt_sql_request_seq += 1
+        return gpt_sql_request_seq
+
+
+def get_course_title(course_id: int) -> str:
+    course = sql_return.find_course_id(course_id)
+    if not course:
+        return str(course_id)
+    return str(course[1])
+
+
+def normalize_user_action_text(value, max_len: int = 240) -> str:
+    text = " ".join(str(value).split())
+    if len(text) > max_len:
+        return f"{text[:max_len - 3]}..."
+    return text
+
+
+def format_user_for_log(from_user) -> str:
+    user_id = getattr(from_user, "id", "unknown")
+    username = getattr(from_user, "username", None)
+    telegram_name = " ".join(
+        part
+        for part in [getattr(from_user, "first_name", ""), getattr(from_user, "last_name", "")]
+        if part
+    ).strip()
+
+    db_name = ""
+    try:
+        db_user = sql_return.get_user_name(int(user_id))
+        if db_user:
+            db_name = " ".join(part for part in db_user if part).strip()
+    except Exception:
+        db_name = ""
+
+    resolved_name = db_name or telegram_name or "unknown_name"
+    username_part = f"@{username}" if username else "no_username"
+    return f"{resolved_name} ({username_part}, id={user_id})"
+
+
+def log_user_action(from_user, action: str, details: str = "") -> None:
+    safe_action = normalize_user_action_text(action, 120)
+    safe_details = normalize_user_action_text(details)
+    message = f"user_action: {safe_action} | {format_user_for_log(from_user)}"
+    if safe_details:
+        message += f" | {safe_details}"
+    log(message)
+
+
+def callback_action_name(callback_data: str) -> str:
+    action_map = (
+        ("reg_approve_", "registration.approve"),
+        ("reg_deny_", "registration.deny"),
+        ("reg_ban_", "registration.ban"),
+        ("mm_send", "menu.send"),
+        ("mm_check", "menu.check"),
+        ("mm_courses_", "menu.courses"),
+        ("mm_answers_", "menu.answers"),
+        ("mm_main_menu", "menu.main"),
+        ("course_", "course.open"),
+        ("add_student_", "course.add_student_prompt"),
+        ("add_developer_", "course.add_developer_prompt"),
+        ("content_", "course.content"),
+        ("gpt_add_lesson_", "gpt_lesson.start"),
+        ("toggle_task_", "task.toggle_status"),
+        ("lesson_", "lesson.open"),
+        ("task_", "task.open"),
+        ("send-course_", "solution.select_course"),
+        ("send-task_", "solution.select_lesson"),
+        ("send-final_", "solution.select_task"),
+        ("check-course-all_", "check.all_courses"),
+        ("check-course_", "check.course"),
+        ("check-add-comment_", "check.comment_prompt"),
+        ("check-final", "check.final_verdict"),
+        ("create_course", "course.create_prompt"),
+        ("create_lesson", "lesson.create_prompt"),
+        ("create_task", "task.create_prompt"),
+        ("solution", "solution.open"),
+        ("self_reject", "solution.self_reject"),
+        ("undo_self_reject", "solution.self_reject_undo"),
+        ("admin_panel_open", "admin.panel_open"),
+        ("admin_panel_backup", "admin.backup"),
+        ("admin_panel_stop", "admin.stop"),
+        ("admin_panel_ban", "admin.ban_prompt"),
+        ("admin_panel_unban", "admin.unban_prompt"),
+        ("admin_panel_conf_stop", "admin.stop_confirm"),
+        ("gptsql_accept_", "gpt_lesson.sql_accept"),
+        ("gptsql_reject_", "gpt_lesson.sql_reject"),
+        ("gptsql_retry_", "gpt_lesson.sql_retry"),
+    )
+    for prefix, action in action_map:
+        if callback_data.startswith(prefix):
+            return action
+    return "callback.unknown"
+
+
+def save_lesson_source_file(message):
+    if message.content_type not in ("photo", "document"):
+        raise ValueError("Нужно отправить фотографию листка или PDF-файл.")
+
+    if not os.path.exists("files"):
+        os.makedirs("files")
+
+    if message.content_type == "photo":
+        file_info = bot.get_file(message.photo[-1].file_id)
+        if file_info.file_size > MAX_UPLOAD_SIZE_BYTES:
+            raise ValueError("Файл слишком большой. Максимальный размер - 15 МБ.")
+
+        downloaded_file = bot.download_file(file_info.file_path)
+        file_extension = os.path.splitext(file_info.file_path)[1].lower() or ".jpg"
+        if file_extension not in [".jpg", ".jpeg", ".png", ".webp"]:
+            file_extension = ".jpg"
+        original_file_name = f"photo{file_extension}"
+    else:
+        file_info = bot.get_file(message.document.file_id)
+        if file_info.file_size > MAX_UPLOAD_SIZE_BYTES:
+            raise ValueError("Файл слишком большой. Максимальный размер - 15 МБ.")
+
+        mime_type = (message.document.mime_type or "").lower()
+        original_file_name = message.document.file_name or "document.pdf"
+        file_extension = os.path.splitext(original_file_name)[1].lower()
+        if file_extension != ".pdf" and mime_type != "application/pdf":
+            raise ValueError("Для документа поддерживается только формат PDF.")
+        file_extension = ".pdf"
+        downloaded_file = bot.download_file(file_info.file_path)
+
+    new_file_name = f'{sql_return.next_name("files")}{file_extension}'
+    save_path = f"files/{new_file_name}"
+
+    with open(save_path, "wb") as new_file:
+        new_file.write(downloaded_file)
+
+    sql_return.save_file(message.content_type, new_file_name, save_path, message.from_user.id)
+
+    return {
+        "file_path": save_path,
+        "file_type": message.content_type,
+        "stored_file_name": new_file_name,
+        "original_file_name": original_file_name,
+    }
+
+
+def split_sql_statements(sql_text: str) -> list[str]:
+    statements = []
+    current = []
+    in_single_quote = False
+    in_double_quote = False
+    index = 0
+
+    while index < len(sql_text):
+        char = sql_text[index]
+
+        if char == "'" and not in_double_quote:
+            if in_single_quote and index + 1 < len(sql_text) and sql_text[index + 1] == "'":
+                current.append(char)
+                current.append(sql_text[index + 1])
+                index += 2
+                continue
+            in_single_quote = not in_single_quote
+        elif char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+
+        if char == ";" and not in_single_quote and not in_double_quote:
+            statement = "".join(current).strip()
+            if statement:
+                statements.append(statement)
+            current = []
+        else:
+            current.append(char)
+
+        index += 1
+
+    tail = "".join(current).strip()
+    if tail:
+        statements.append(tail)
+
+    return statements
+
+
+def split_sql_csv(items_text: str) -> list[str]:
+    items = []
+    current = []
+    depth = 0
+    in_single_quote = False
+    in_double_quote = False
+    index = 0
+
+    while index < len(items_text):
+        char = items_text[index]
+
+        if char == "'" and not in_double_quote:
+            if in_single_quote and index + 1 < len(items_text) and items_text[index + 1] == "'":
+                current.append(char)
+                current.append(items_text[index + 1])
+                index += 2
+                continue
+            in_single_quote = not in_single_quote
+        elif char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+        elif char == "(" and not in_single_quote and not in_double_quote:
+            depth += 1
+        elif char == ")" and not in_single_quote and not in_double_quote and depth > 0:
+            depth -= 1
+
+        if char == "," and depth == 0 and not in_single_quote and not in_double_quote:
+            item = "".join(current).strip()
+            if item:
+                items.append(item)
+            current = []
+        else:
+            current.append(char)
+
+        index += 1
+
+    tail = "".join(current).strip()
+    if tail:
+        items.append(tail)
+
+    return items
+
+
+def normalize_identifier(identifier: str) -> str:
+    return identifier.strip().strip('`"[]').lower()
+
+
+def normalize_lessons_insert_statement(statement: str) -> str:
+    match = re.match(
+        r"^\s*INSERT\s+INTO\s+lessons\s*\((.*?)\)\s*VALUES\s*\((.*)\)\s*$",
+        statement,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return statement
+
+    columns = split_sql_csv(match.group(1))
+    values = split_sql_csv(match.group(2))
+
+    if len(columns) != len(values):
+        raise ValueError("В INSERT INTO lessons количество колонок и значений не совпадает.")
+
+    mapped_values = {}
+    for raw_column, value in zip(columns, values):
+        column = normalize_identifier(raw_column)
+        normalized_column = LESSONS_COLUMN_ALIASES.get(column, column)
+        if normalized_column not in {"id", "course_id", "title", "status", "open_date"}:
+            raise ValueError(f"Недопустимая колонка lessons: {raw_column}")
+        if normalized_column not in mapped_values:
+            mapped_values[normalized_column] = value
+
+    if "course_id" not in mapped_values:
+        raise ValueError("В INSERT INTO lessons отсутствует course_id.")
+    if "title" not in mapped_values:
+        mapped_values["title"] = "'Новый урок'"
+    if "status" not in mapped_values:
+        mapped_values["status"] = "'open'"
+
+    ordered_columns = ["id", "course_id", "title", "status", "open_date"]
+    final_columns = [col for col in ordered_columns if col in mapped_values]
+    final_values = [mapped_values[col] for col in final_columns]
+    return f"INSERT INTO lessons ({', '.join(final_columns)}) VALUES ({', '.join(final_values)})"
+
+
+def normalize_tasks_insert_statement(statement: str, default_title_index: int) -> tuple[str, int]:
+    match = re.match(
+        r"^\s*INSERT\s+INTO\s+tasks\s*\((.*?)\)\s*VALUES\s*\((.*)\)\s*$",
+        statement,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return statement, default_title_index
+
+    columns = split_sql_csv(match.group(1))
+    values = split_sql_csv(match.group(2))
+
+    if len(columns) != len(values):
+        raise ValueError("В INSERT INTO tasks количество колонок и значений не совпадает.")
+
+    mapped_values = {}
+    for raw_column, value in zip(columns, values):
+        column = normalize_identifier(raw_column)
+        normalized_column = TASKS_COLUMN_ALIASES.get(column, column)
+
+        if normalized_column not in {"id", "lesson_id", "title", "status", "deadline", "description"}:
+            raise ValueError(f"Недопустимая колонка tasks: {raw_column}")
+
+        if normalized_column not in mapped_values:
+            mapped_values[normalized_column] = value
+
+    if "lesson_id" not in mapped_values:
+        raise ValueError("В INSERT INTO tasks отсутствует lesson_id.")
+    if "title" not in mapped_values:
+        mapped_values["title"] = f"'Задача {default_title_index}'"
+        default_title_index += 1
+    if "status" not in mapped_values:
+        mapped_values["status"] = "'open'"
+    if "description" not in mapped_values:
+        mapped_values["description"] = "NULL"
+
+    ordered_columns = ["id", "lesson_id", "title", "status", "deadline", "description"]
+    final_columns = [col for col in ordered_columns if col in mapped_values]
+    final_values = [mapped_values[col] for col in final_columns]
+    statement_sql = f"INSERT INTO tasks ({', '.join(final_columns)}) VALUES ({', '.join(final_values)})"
+    return statement_sql, default_title_index
+
+
+def normalize_lesson_sql(sql_text: str) -> str:
+    if not sql_text or not sql_text.strip():
+        raise ValueError("Пустой SQL.")
+
+    statements = split_sql_statements(sql_text)
+    if not statements:
+        raise ValueError("SQL не содержит команд.")
+
+    normalized = []
+    lessons_count = 0
+    tasks_count = 0
+    default_title_index = 1
+
+    for statement in statements:
+        compact = statement.strip()
+        if not compact:
+            continue
+
+        if re.match(r"^\s*INSERT\s+INTO\s+lessons\b", compact, flags=re.IGNORECASE):
+            normalized.append(normalize_lessons_insert_statement(compact))
+            lessons_count += 1
+            continue
+
+        if re.match(r"^\s*INSERT\s+INTO\s+tasks\b", compact, flags=re.IGNORECASE):
+            statement_sql, default_title_index = normalize_tasks_insert_statement(compact, default_title_index)
+            normalized.append(statement_sql)
+            tasks_count += 1
+            continue
+
+        if re.match(r"^\s*(BEGIN|COMMIT|END|ROLLBACK)\b", compact, flags=re.IGNORECASE):
+            continue
+
+        raise ValueError(f"Недопустимая SQL-команда: {compact[:80]}")
+
+    if lessons_count == 0:
+        raise ValueError("В SQL нет INSERT INTO lessons.")
+    if tasks_count == 0:
+        raise ValueError("В SQL нет INSERT INTO tasks.")
+
+    return ";\n\n".join(normalized) + ";"
+
+
+def get_gpt_sql_review_markup(request_id: int):
+    markup = types.InlineKeyboardMarkup()
+    markup.row(
+        types.InlineKeyboardButton("✅ Применить", callback_data=f"gptsql_accept_{request_id}"),
+        types.InlineKeyboardButton("❌ Отклонить", callback_data=f"gptsql_reject_{request_id}")
+    )
+    markup.add(types.InlineKeyboardButton("🔁 На повторную проверку", callback_data=f"gptsql_retry_{request_id}"))
+    return markup
+
+
+def send_gpt_sql_for_review(request_id: int, admin_feedback: str | None = None):
+    with gpt_sql_requests_lock:
+        request = gpt_sql_requests.get(request_id)
+    if not request:
+        return
+
+    admin_id = get_admin_id()
+    course_title = get_course_title(request["course_id"])
+    user_name = sql_return.get_user_name(request["initiator_id"])
+    initiator_text = f"{request['initiator_id']}"
+    if user_name:
+        initiator_text = f"{user_name[0]} {user_name[1]} ({request['initiator_id']})"
+
+    file_caption = f"Заявка #{request_id}\nКурс: {course_title}\nОтправил: {initiator_text}"
+    try:
+        if request["file_type"] == "photo":
+            with open(request["file_path"], "rb") as photo:
+                bot.send_photo(admin_id, photo, caption=file_caption)
+        else:
+            with open(request["file_path"], "rb") as document:
+                bot.send_document(
+                    admin_id,
+                    document,
+                    visible_file_name=request["original_file_name"],
+                    caption=file_caption
+                )
+    except Exception as error:
+        bot.send_message(admin_id, f"⚠️ Не удалось приложить файл к заявке #{request_id}: {error}")
+
+    sql_text = request.get("sql", "").strip()
+    if not sql_text:
+        bot.send_message(admin_id, f"⚠️ У заявки #{request_id} пустой SQL.")
+        return
+
+    truncated = False
+    sql_for_message = sql_text
+    if len(sql_for_message) > 3000:
+        truncated = True
+        sql_for_message = sql_for_message[:3000] + "\n-- ...обрезано..."
+
+    review_title = f"Проверка SQL для заявки #{request_id}\nКурс: {course_title}"
+    if admin_feedback:
+        review_title += f"\nКомментарий для исправления: {html.escape(admin_feedback)}"
+
+    review_text = f"{review_title}\n\n<pre>{html.escape(sql_for_message)}</pre>"
+    if truncated:
+        sql_file = io.BytesIO(sql_text.encode("utf-8"))
+        sql_file.name = f"gpt_request_{request_id}.sql"
+        bot.send_document(admin_id, sql_file, caption=f"Полный SQL для заявки #{request_id}")
+        review_text += "\n\nПолный SQL отправлен отдельным файлом."
+
+    bot.send_message(
+        admin_id,
+        review_text,
+        parse_mode="HTML",
+        reply_markup=get_gpt_sql_review_markup(request_id)
+    )
+
+
+def run_gpt_sql_generation(request_id: int, admin_feedback: str | None = None):
+    with gpt_sql_requests_lock:
+        request = gpt_sql_requests.get(request_id)
+        if not request:
+            return
+        request["status"] = "processing"
+        course_id = request["course_id"]
+        file_path = request["file_path"]
+        previous_sql = request.get("sql", "")
+        initiator_id = request["initiator_id"]
+
+    try:
+        if admin_feedback:
+            sql_text = parsing_gpt.fix_lesson_sql(
+                lesson_file_path=file_path,
+                course_id=course_id,
+                previous_sql=previous_sql,
+                admin_feedback=admin_feedback,
+            )
+        else:
+            sql_text = parsing_gpt.generate_lesson_sql(
+                lesson_file_path=file_path,
+                course_id=course_id,
+            )
+        sql_text = normalize_lesson_sql(sql_text)
+    except Exception as error:
+        with gpt_sql_requests_lock:
+            request = gpt_sql_requests.get(request_id)
+            if request:
+                request["status"] = "error"
+
+        error_text = f"{type(error).__name__}: {error}"
+        bot.send_message(initiator_id, f"❌ Не удалось получить SQL от GPT: {error_text}")
+        if initiator_id != get_admin_id():
+            bot.send_message(get_admin_id(), f"❌ Ошибка GPT в заявке #{request_id}: {error_text}")
+        return
+
+    with gpt_sql_requests_lock:
+        request = gpt_sql_requests.get(request_id)
+        if not request:
+            return
+        request["status"] = "awaiting_admin"
+        request["sql"] = sql_text
+        if admin_feedback:
+            request["last_feedback"] = admin_feedback
+
+    send_gpt_sql_for_review(request_id, admin_feedback)
+    if admin_feedback:
+        bot.send_message(initiator_id, f"🔁 SQL по заявке #{request_id} исправлен и снова отправлен администратору.")
+    else:
+        bot.send_message(initiator_id, f"✅ SQL по заявке #{request_id} отправлен администратору на проверку.")
+
+
+def gpt_add_lesson_start(call, course_id: int):
+    if not can_use_gpt_lesson_button(call.from_user.id):
+        bot.send_message(call.message.chat.id, "У вас нет доступа к этой функции.")
+        return
+    if not sql_return.find_course_id(course_id):
+        bot.send_message(call.message.chat.id, "Курс не найден.")
+        return
+
+    bot.edit_message_text(
+        "Отправьте фото листка или PDF с задачами.\n\n"
+        "После загрузки я отправлю файл в GPT и подготовлю SQL для проверки админом.\n"
+        "Для отмены отправьте /cancel.",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id
+    )
+    bot.register_next_step_handler(call.message, gpt_add_lesson_receive_file, course_id)
+
+
+def gpt_add_lesson_receive_file(message, course_id: int):
+    log_user_action(
+        message.from_user,
+        "gpt_lesson.file_upload_input",
+        f"course_id={course_id}, content_type={message.content_type}"
+    )
+    if message.content_type == "text":
+        command = (message.text or "").strip().lower()
+        if command in ["/cancel", "cancel", "отмена"]:
+            bot.send_message(message.chat.id, "Действие отменено.")
+            return
+        bot.send_message(message.chat.id, "Нужно отправить фото листка или PDF-файл. Для отмены отправьте /cancel.")
+        bot.register_next_step_handler(message, gpt_add_lesson_receive_file, course_id)
+        return
+
+    if message.content_type not in ("photo", "document"):
+        bot.send_message(message.chat.id, "Нужно отправить фото листка или PDF-файл. Для отмены отправьте /cancel.")
+        bot.register_next_step_handler(message, gpt_add_lesson_receive_file, course_id)
+        return
+
+    try:
+        file_data = save_lesson_source_file(message)
+    except ValueError as error:
+        bot.send_message(message.chat.id, str(error))
+        bot.register_next_step_handler(message, gpt_add_lesson_receive_file, course_id)
+        return
+    except Exception as error:
+        bot.send_message(message.chat.id, f"Ошибка при сохранении файла: {error}")
+        return
+
+    request_id = next_gpt_sql_request_id()
+    with gpt_sql_requests_lock:
+        gpt_sql_requests[request_id] = {
+            "id": request_id,
+            "course_id": course_id,
+            "initiator_id": message.from_user.id,
+            "file_path": file_data["file_path"],
+            "file_type": file_data["file_type"],
+            "stored_file_name": file_data["stored_file_name"],
+            "original_file_name": file_data["original_file_name"],
+            "sql": "",
+            "status": "queued",
+            "created_at": time.time(),
+        }
+
+    sql_return.log_action(
+        message.from_user.id,
+        "gpt_lesson_request_created",
+        f"{request_id} {course_id} {file_data['stored_file_name']}"
+    )
+
+    bot.send_message(
+        message.chat.id,
+        f"Файл получен. Запускаю GPT и готовлю SQL (заявка #{request_id}). Это может занять до минуты."
+    )
+    Thread(target=run_gpt_sql_generation, args=(request_id,), daemon=True).start()
+
+
+def gpt_sql_accept(call, request_id: int):
+    if call.from_user.id != get_admin_id():
+        bot.send_message(call.message.chat.id, "Только админ может подтверждать SQL.")
+        return
+
+    with gpt_sql_requests_lock:
+        request = gpt_sql_requests.get(request_id)
+    if not request:
+        bot.send_message(call.message.chat.id, f"Заявка #{request_id} уже обработана или не найдена.")
+        return
+
+    sql_text = request.get("sql", "").strip()
+    if not sql_text:
+        bot.send_message(call.message.chat.id, f"В заявке #{request_id} нет SQL для выполнения.")
+        return
+
+    try:
+        sql_to_execute = normalize_lesson_sql(sql_text)
+        if sql_to_execute != sql_text:
+            with gpt_sql_requests_lock:
+                if request_id in gpt_sql_requests:
+                    gpt_sql_requests[request_id]["sql"] = sql_to_execute
+
+        with sqlite3.connect(config["db-name"]) as conn:
+            conn.executescript(sql_to_execute)
+            conn.commit()
+    except Exception as error:
+        bot.send_message(call.message.chat.id, f"❌ Ошибка применения SQL по заявке #{request_id}: {error}")
+        return
+
+    with gpt_sql_requests_lock:
+        gpt_sql_requests.pop(request_id, None)
+
+    sql_return.log_action(call.from_user.id, "gpt_lesson_request_accepted", f"{request_id}")
+    bot.send_message(call.message.chat.id, f"✅ SQL из заявки #{request_id} применен к базе.")
+
+    if request["initiator_id"] != call.from_user.id:
+        bot.send_message(request["initiator_id"], f"✅ Админ подтвердил заявку #{request_id}. SQL применен к базе.")
+
+
+def gpt_sql_reject(call, request_id: int):
+    if call.from_user.id != get_admin_id():
+        bot.send_message(call.message.chat.id, "Только админ может отклонять SQL.")
+        return
+
+    with gpt_sql_requests_lock:
+        request = gpt_sql_requests.pop(request_id, None)
+
+    if not request:
+        bot.send_message(call.message.chat.id, f"Заявка #{request_id} уже обработана или не найдена.")
+        return
+
+    sql_return.log_action(call.from_user.id, "gpt_lesson_request_rejected", f"{request_id}")
+    bot.send_message(call.message.chat.id, f"🗑 Заявка #{request_id} отклонена.")
+
+    if request["initiator_id"] != call.from_user.id:
+        bot.send_message(request["initiator_id"], f"❌ Админ отклонил заявку #{request_id}.")
+
+
+def gpt_sql_retry(call, request_id: int):
+    if call.from_user.id != get_admin_id():
+        bot.send_message(call.message.chat.id, "Только админ может отправлять SQL на доработку.")
+        return
+
+    with gpt_sql_requests_lock:
+        request = gpt_sql_requests.get(request_id)
+    if not request:
+        bot.send_message(call.message.chat.id, f"Заявка #{request_id} уже обработана или не найдена.")
+        return
+
+    bot.send_message(
+        call.message.chat.id,
+        f"Введите комментарий с ошибками для заявки #{request_id}. "
+        "Я отправлю его в GPT для исправления SQL.\nДля отмены отправьте /cancel."
+    )
+    bot.register_next_step_handler(call.message, gpt_sql_retry_feedback, request_id)
+
+
+def gpt_sql_retry_feedback(message, request_id: int):
+    log_user_action(
+        message.from_user,
+        "gpt_lesson.retry_feedback_input",
+        f"request_id={request_id}, text={message.text or ''}"
+    )
+    if message.from_user.id != get_admin_id():
+        bot.send_message(message.chat.id, "Только админ может отправлять SQL на доработку.")
+        return
+
+    feedback = (message.text or "").strip()
+    if feedback.lower() in ["/cancel", "cancel", "отмена"]:
+        bot.send_message(message.chat.id, "Повторная проверка отменена.")
+        return
+    if not feedback:
+        bot.send_message(message.chat.id, "Комментарий пустой. Отправьте текст ошибки или /cancel.")
+        bot.register_next_step_handler(message, gpt_sql_retry_feedback, request_id)
+        return
+
+    with gpt_sql_requests_lock:
+        request = gpt_sql_requests.get(request_id)
+        if not request:
+            bot.send_message(message.chat.id, f"Заявка #{request_id} уже обработана или не найдена.")
+            return
+        if not request.get("sql"):
+            bot.send_message(message.chat.id, f"В заявке #{request_id} пока нет SQL для исправления.")
+            return
+
+    sql_return.log_action(message.from_user.id, "gpt_lesson_request_retry", f"{request_id} {feedback}")
+    bot.send_message(message.chat.id, f"🔄 Запросил исправление SQL у GPT для заявки #{request_id}.")
+    Thread(target=run_gpt_sql_generation, args=(request_id, feedback), daemon=True).start()
+
 @bot.message_handler(commands=["start"])
 def start(message):
+    log_user_action(message.from_user, "command.start")
     user = sql_return.find_user_id(message.from_user.id)
     if user and user[3] == "pending":
         bot.reply_to(message, "Вы уже подали заявку, ожидайте ответа администратора.")
@@ -52,10 +746,13 @@ def start(message):
         bot.register_next_step_handler(message, register_name)
 
 def register_name(message):
-    name = message.text.split()
+    raw_name = (message.text or "").strip()
+    log_user_action(message.from_user, "registration.name_input", f"text={raw_name}")
+    name = raw_name.split()
     if len(name) != 2:
         bot.reply_to(message, f"Вы ввели имя и фамилию неправильно. Введите их снова.")
         bot.register_next_step_handler(message, register_name)
+        sql_return.log_action(message.from_user.id, "register_invalid_name", raw_name)
     else:
         sql_return.reg_user(int(message.from_user.id), name[0], name[1])
 
@@ -67,10 +764,17 @@ def register_name(message):
         markup.add(button1)
         markup.add(button2, button3)
         bot.send_message(int(config["admin_id"]), f"@{message.from_user.username} ({message.from_user.id}) регистрируется как {name[0]} {name[1]}", reply_markup=markup)
-    sql_return.log_action(message.from_user.id, "register", f"{name[0]} {name[1]}")
+        sql_return.log_action(message.from_user.id, "register", f"{name[0]} {name[1]}")
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_query(call):
+    callback_data = call.data or ""
+    log_user_action(
+        call.from_user,
+        callback_action_name(callback_data),
+        f"callback_data={callback_data}"
+    )
+
     user = sql_return.find_user_id(call.from_user.id)
     if user and user[3] == "banned":
         bot.answer_callback_query(call.id, "Вы были забанены. Обратитесь к администратору")
@@ -133,6 +837,15 @@ def handle_query(call):
         add_developer(call)
     elif call.data.startswith("content_"):
         course_content(call, int(call.data.split('_')[-2]), int(call.data.split("_")[-1]))
+    elif call.data.startswith("gpt_add_lesson_"):
+        gpt_add_lesson_start(call, int(call.data.split("_")[-1]))
+    elif call.data.startswith("toggle_task_"):
+        toggle_task_open_close(
+            call,
+            int(call.data.split('_')[-3]),
+            int(call.data.split('_')[-2]),
+            int(call.data.split('_')[-1]),
+        )
     elif call.data.startswith("lesson_"):
         lesson_content(call, int(call.data.split('_')[-3]), int(call.data.split('_')[-2]), int(call.data.split("_")[-1]))
     elif call.data.startswith("task_"):
@@ -179,6 +892,12 @@ def handle_query(call):
         unban(call)
     elif call.data.startswith("admin_panel_conf_stop"):
         stop_confirm(call)
+    elif call.data.startswith("gptsql_accept_"):
+        gpt_sql_accept(call, int(call.data.split("_")[-1]))
+    elif call.data.startswith("gptsql_reject_"):
+        gpt_sql_reject(call, int(call.data.split("_")[-1]))
+    elif call.data.startswith("gptsql_retry_"):
+        gpt_sql_retry(call, int(call.data.split("_")[-1]))
     else:
         bot.answer_callback_query(call.id, "Обработчика для этой кнопки не существует.")
         bot.send_message(config["admin_id"], f"{call.from_user.id} ({call.from_user.username}; {sql_return.get_user_name(call.from_user.id)[0]} {sql_return.get_user_name(call.from_user.id)[1]}) использовал неизвестную кнопку: {call.data}")
@@ -233,8 +952,6 @@ def mm_send_lesson(call, course_id, page=0):
         bot.send_message(call.message.chat.id, "Вы не зарегистрированы.")
         return
 
-    is_admin = str(call.from_user.id) == config["admin_id"]
-
     lessons = sql_return.lessons_in_course(course_id)
 
     if not lessons:  # Проверяем, что уроки существуют
@@ -272,8 +989,6 @@ def mm_send_task(call, course_id, lesson_id, page=0):
     if not user:
         bot.send_message(call.message.chat.id, "Вы не зарегистрированы.")
         return
-
-    is_admin = str(call.from_user.id) == config["admin_id"]
 
     tasks_temp = sql_return.tasks_in_lesson(lesson_id)
     tasks = []
@@ -358,6 +1073,11 @@ def mm_send_final(call, lesson_id, course_id, task_id):
 last_time_student_answer_dict = {}
 
 def mm_send_final_2(message, lesson_id, course_id, task_id, user_id):
+    log_user_action(
+        message.from_user,
+        "solution.submit_input",
+        f"task_id={task_id}, lesson_id={lesson_id}, course_id={course_id}, content_type={message.content_type}"
+    )
     if user_id not in last_time_student_answer_dict:
         last_time_student_answer_dict[user_id] = time.time()
     else:
@@ -693,6 +1413,11 @@ def check_task(type: str, call, task_data, comment: str = "None"):
                     )
 
 def check_add_comment(message, call, type: str, task_id):
+    log_user_action(
+        message.from_user,
+        "check.comment_input",
+        f"type={type}, task_id={task_id}, text={message.text or ''}"
+    )
     task_data = sql_return.get_student_answer_from_id(task_id)
     comment = message.text
     comment_for_answer_dict[message.from_user.id] = comment
@@ -849,6 +1574,8 @@ def course_info(call):
         markup.add(types.InlineKeyboardButton("➕ Добавить ученика", callback_data=f'add_student_{course_id}'))
         markup.add(types.InlineKeyboardButton("➕ Добавить разработчика", callback_data=f'add_developer_{course_id}'))
     markup.add(types.InlineKeyboardButton("📂 Содержание", callback_data=f"content_{course_id}_0"))
+    if can_use_gpt_lesson_button(call.from_user.id):
+        markup.add(types.InlineKeyboardButton("🤖 Добавить урок (GPT)", callback_data=f"gpt_add_lesson_{course_id}"))
     markup.add(types.InlineKeyboardButton("📃 К курсам", callback_data="mm_courses_0"))
 
     bot.edit_message_text(course_info, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
@@ -859,6 +1586,11 @@ def add_student(call):
     bot.register_next_step_handler(call.message, lambda message: add_student_to_course(message, course_id))
 
 def add_student_to_course(message, course_id):
+    log_user_action(
+        message.from_user,
+        "course.add_student_input",
+        f"course_id={course_id}, student_id_raw={message.text or ''}"
+    )
     try:
         student_id = int(message.text)
         student = sql_return.find_user_id(student_id)
@@ -885,6 +1617,11 @@ def add_developer(call):
     bot.register_next_step_handler(call.message, lambda message: add_developer_to_course(message, course_id))
 
 def add_developer_to_course(message, course_id):
+    log_user_action(
+        message.from_user,
+        "course.add_developer_input",
+        f"course_id={course_id}, developer_id_raw={message.text or ''}"
+    )
     try:
         developer_id = int(message.text)
         developer = sql_return.find_user_id(developer_id)
@@ -912,11 +1649,17 @@ def course_content(call, course_id, page=0):
         return
 
     is_admin = str(call.from_user.id) == str(config["admin_id"])
+    is_dev = sql_return.is_course_dev(call.from_user.id, sql_return.developers_list(course_id))
+    can_use_gpt = can_use_gpt_lesson_button(call.from_user.id)
 
     lessons = sql_return.lessons_in_course(course_id)
 
     if not lessons:  # Проверяем, что уроки существуют
         markup = types.InlineKeyboardMarkup()
+        if is_admin or is_dev:
+            markup.add(types.InlineKeyboardButton("➕ Создать урок", callback_data=f'create_lesson_{course_id}'))
+        if can_use_gpt:
+            markup.add(types.InlineKeyboardButton("🤖 Добавить урок (GPT)", callback_data=f'gpt_add_lesson_{course_id}'))
         markup.add(types.InlineKeyboardButton("🔙 К курсу", callback_data=f"course_{course_id}"))
         bot.send_message(call.message.chat.id, "В этом курсе пока нет уроков.", reply_markup=markup)
         return
@@ -943,8 +1686,10 @@ def course_content(call, course_id, page=0):
 
     markup.row(*navigation)
 
-    if (is_admin or sql_return.is_course_dev(call.from_user.id, sql_return.developers_list(course_id))) and page == 0:
+    if (is_admin or is_dev) and page == 0:
         markup.add(types.InlineKeyboardButton("➕ Создать урок", callback_data=f'create_lesson_{course_id}'))
+    if can_use_gpt and page == 0:
+        markup.add(types.InlineKeyboardButton("🤖 Добавить урок (GPT)", callback_data=f'gpt_add_lesson_{course_id}'))
 
     markup.add(types.InlineKeyboardButton("🔙 К курсу", callback_data=f"course_{course_id}"))
 
@@ -993,14 +1738,15 @@ def task_info(call, task_id, lesson_id, course_id):
     task = sql_return.task_info(task_id)
     
     if task:
-        task_id, lesson_id, task_title, task_status, task_deadline, task_description = task
+        task_id, lesson_id, task_title, raw_task_status, task_deadline, task_description = task
 
         status_translation = {
             'open': 'Открыт',
-            'close': 'Архивирован',
+            'close': 'Закрыт',
+            'arc': 'Закрыт',
             'dev': 'В разработке'
         }
-        task_status = status_translation.get(task_status, 'Неизвестен')
+        task_status = status_translation.get(raw_task_status, 'Неизвестен')
         
         if task_deadline:
             # Преобразуем временную метку в объект datetime
@@ -1034,6 +1780,11 @@ def task_info(call, task_id, lesson_id, course_id):
                              f"📝 <b>Текст задачи</b>: {task_description if task_description else 'Нет текста задачи'}")
         
         markup = types.InlineKeyboardMarkup()
+        is_admin = str(call.from_user.id) == str(config["admin_id"])
+        is_dev = sql_return.is_course_dev(call.from_user.id, sql_return.developers_list(course_id))
+        if is_admin or is_dev:
+            toggle_task_text = "🔒 Закрыть задачу" if raw_task_status == "open" else "🔓 Открыть задачу"
+            markup.add(types.InlineKeyboardButton(toggle_task_text, callback_data=f"toggle_task_{course_id}_{lesson_id}_{task_id}"))
         markup.add(types.InlineKeyboardButton("🔙 К списку задач", callback_data=f"lesson_{course_id}_{lesson_id}_0"))
 
         bot.edit_message_text(task_info_message, 
@@ -1045,6 +1796,27 @@ def task_info(call, task_id, lesson_id, course_id):
         bot.edit_message_text("❗️ Задача не найдена", 
                               chat_id=call.message.chat.id, 
                               message_id=call.message.message_id)
+
+def toggle_task_open_close(call, course_id, lesson_id, task_id):
+    user = sql_return.find_user_id(call.from_user.id)
+
+    if not user:
+        bot.send_message(call.message.chat.id, "Вы не зарегистрированы.")
+        return
+
+    is_admin = str(call.from_user.id) == str(config["admin_id"])
+    is_dev = sql_return.is_course_dev(call.from_user.id, sql_return.developers_list(course_id))
+    if not (is_admin or is_dev):
+        bot.send_message(call.message.chat.id, "У вас нет прав на изменение статуса задачи.")
+        return
+
+    new_status = sql_return.toggle_task_status(task_id)
+    if new_status is None:
+        bot.send_message(call.message.chat.id, "Задача не найдена.")
+        return
+
+    sql_return.log_action(call.from_user.id, "toggle_task_status", f"{task_id} {new_status}")
+    task_info(call, task_id, lesson_id, course_id)
 
 def create_course(call):
     bot.edit_message_text(f"""🎓 Вы создаёте курс.
@@ -1058,6 +1830,11 @@ def create_course(call):
     bot.register_next_step_handler(call.message, create_course_name, call.message.message_id)
 
 def create_course_name(message, editing_message_id):
+    log_user_action(
+        message.from_user,
+        "course.create_name_input",
+        f"text={message.text or ''}"
+    )
     name = message.text
     bot.delete_message(message.chat.id, message.message_id)
     bot.edit_message_text(f"""🎓 Вы создаёте курс.
@@ -1071,6 +1848,11 @@ def create_course_name(message, editing_message_id):
     bot.register_next_step_handler(message, create_course_developers, editing_message_id, name)
 
 def create_course_developers(message, editing_message_id, course_name):
+    log_user_action(
+        message.from_user,
+        "course.create_developers_input",
+        f"course_name={course_name}, text={message.text or ''}"
+    )
     developers = message.text.split()
     bot.delete_message(message.chat.id, message.message_id)
 
@@ -1123,6 +1905,11 @@ def create_lesson(call):
     bot.register_next_step_handler(call.message, create_lesson_name, call.message.message_id, call.data.split('_')[-1])
 
 def create_lesson_name(message, editing_message_id, course_id):
+    log_user_action(
+        message.from_user,
+        "lesson.create_name_input",
+        f"course_id={course_id}, text={message.text or ''}"
+    )
     name = message.text
     bot.delete_message(message.chat.id, message.message_id)
     sql_return.create_lesson(course_id, name)
@@ -1142,6 +1929,11 @@ def create_task(call):
     bot.register_next_step_handler(call.message, create_task_name, call.message.message_id, call.data.split('_')[-2], call.data.split('_')[-1])
 
 def create_task_name(message, editing_message_id, lesson_id, course_id):
+    log_user_action(
+        message.from_user,
+        "task.create_name_input",
+        f"course_id={course_id}, lesson_id={lesson_id}, text={message.text or ''}"
+    )
     task_name = message.text
     bot.delete_message(message.chat.id, message.message_id)
     bot.edit_message_text(f"""🎓 Вы создаёте задачу.
@@ -1154,6 +1946,11 @@ def create_task_name(message, editing_message_id, lesson_id, course_id):
     bot.register_next_step_handler(message, create_task_description, editing_message_id, lesson_id, course_id, task_name)
 
 def create_task_description(message, editing_message_id, lesson_id, course_id, task_name):
+    log_user_action(
+        message.from_user,
+        "task.create_description_input",
+        f"course_id={course_id}, lesson_id={lesson_id}, task_name={task_name}, text={message.text or ''}"
+    )
     task_description = message.text
     bot.delete_message(message.chat.id, message.message_id)
     sql_return.create_task(lesson_id, course_id, task_name, task_description)
@@ -1164,10 +1961,12 @@ def create_task_description(message, editing_message_id, lesson_id, course_id, t
 
 @bot.message_handler(commands=["support"])
 def support(message):
+    log_user_action(message.from_user, "command.support")
     bot.reply_to(message, f"Поддержка находится в лс у @agusev2311")
 
 @bot.message_handler(commands=["help"])
 def help(message):
+    log_user_action(message.from_user, "command.help")
     text = """Список всех команд в боте и faq:
 Команды:
 /start - регистрация или главное меню
@@ -1180,6 +1979,7 @@ def help(message):
 
 @bot.message_handler(commands=["why_only_one_file"])
 def why_only_one_file(message):
+    log_user_action(message.from_user, "command.why_only_one_file")
     text = """Вы можете прикрепить к решению не более одного файла (документ или изображение).
 
 Это ограничение связано с тем, что:
@@ -1243,6 +2043,11 @@ def ban(call):
     bot.register_next_step_handler(call, ban_enter)
 
 def ban_enter(call):
+    log_user_action(
+        call.from_user,
+        "admin.ban_input",
+        f"target_ids={call.message.text or ''}"
+    )
     for user in call.message.text.split():
         sql_return.set_user_status(user, "banned")
     sql_return.log_action(call.from_user.id, "ban", f"{call.message.text.split()}")
@@ -1255,9 +2060,14 @@ def unban(call):
     bot.register_next_step_handler(call, unban_enter)
 
 def unban_enter(call):
+    log_user_action(
+        call.from_user,
+        "admin.unban_input",
+        f"target_ids={call.message.text or ''}"
+    )
     for user in call.message.text.split():
         sql_return.set_user_status(user, "approved")
-    sql_return.log_action(call.from_user.id, "ban", f"{call.message.text.split()}")
+    sql_return.log_action(call.from_user.id, "unban", f"{call.message.text.split()}")
     bot.send_message(call.message.chat.id, "Пользователи разбанены")
 
 def stop_confirm(call):
@@ -1317,20 +2127,20 @@ def admin_backup(call):
 
 broadcast("✅ Бот снова работает!")
 
-def infinite_update():
-    print("infinite_update started")
-    while True:
-        try:
-            prog.update_sheet()
-        except Exception as e:
-            # try:
-            #     bot.send_message(config["admin_id"], f"Произошла ошибка в infinite_update: {str(e)}")
-            # except:
-            #     pass
-            sql_return.bug_report(str(e))
-        time.sleep(60 * 3)
-        if not is_polling:
-            break
+# def infinite_update():
+#     print("infinite_update started")
+#     while True:
+#         try:
+#             prog.update_sheet()
+#         except Exception as e:
+#             # try:
+#             #     bot.send_message(config["admin_id"], f"Произошла ошибка в infinite_update: {str(e)}")
+#             # except:
+#             #     pass
+#             sql_return.bug_report(str(e))
+#         time.sleep(60 * 3)
+#         if not is_polling:
+#             break
 
 # update_thread = Thread(target=infinite_update)
 # update_thread.start()
