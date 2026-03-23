@@ -2033,7 +2033,7 @@ VPN_STATS_SERVERS = [
     {
         "name": "🇷🇺 Moscow VPN",
         "domain": "212.133.98.145",
-        "metrics_url": "http://212.133.98.145:9090/metrics",
+        "metrics_url": "http://212.133.98.145:9100/metrics",
         "link": "https://212.133.98.145",
     },
 ]
