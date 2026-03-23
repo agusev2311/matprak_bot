@@ -898,6 +898,23 @@ def handle_query(call):
         gpt_sql_reject(call, int(call.data.split("_")[-1]))
     elif call.data.startswith("gptsql_retry_"):
         gpt_sql_retry(call, int(call.data.split("_")[-1]))
+    elif call.data.startswith("stats_"):
+        if not can_use_vpn_stats(call.from_user.id):
+            bot.answer_callback_query(call.id, "no access")
+            return
+
+        unit = call.data.split("_", 1)[1]
+        msg = build_vpn_stats(unit)
+        try:
+            bot.edit_message_text(
+                msg,
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=get_vpn_stats_keyboard()
+            )
+        except Exception as e:
+            if "message is not modified" not in str(e).lower():
+                raise
     else:
         bot.answer_callback_query(call.id, "Обработчика для этой кнопки не существует.")
         bot.send_message(config["admin_id"], f"{call.from_user.id} ({call.from_user.username}; {sql_return.get_user_name(call.from_user.id)[0]} {sql_return.get_user_name(call.from_user.id)[1]}) использовал неизвестную кнопку: {call.data}")
@@ -1998,110 +2015,98 @@ def why_only_one_file(message):
 """
     bot.send_message(message.chat.id, text)
 
-def vpn_stats_handler(bot):
-    from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-    import requests
+VPN_STATS_ALLOWED_USERS = {962799806, 1133611562}
+VPN_STATS_UNITS = {
+    "B": ("Bytes", 1),
+    "KiB": ("Kibibytes", 1024),
+    "MiB": ("Mebibytes", 1024 ** 2),
+    "GiB": ("Gibibytes", 1024 ** 3),
+    "TiB": ("Tebibytes", 1024 ** 4),
+}
+VPN_STATS_SERVERS = [
+    {
+        "name": "🇩🇪 Germany VPN",
+        "domain": "localhost",
+        "metrics_url": "http://localhost:9090/metrics",
+        "link": "https://localhost",
+    },
+    {
+        "name": "🇷🇺 Moscow VPN",
+        "domain": "212.133.98.145",
+        "metrics_url": "http://212.133.98.145:9090/metrics",
+        "link": "https://212.133.98.145",
+    },
+]
 
-    users = [962799806, 1133611562]
 
-    # список серверов
-    servers = [
-        {
-            "name": "🇩🇪 Germany VPN",
-            "domain": "localhost",
-            "metrics_url": "http://localhost:9090/metrics",
-            "link": "https://localhost"
-        },
-        {
-            "name": "🇷🇺 Moscow VPN",
-            "domain": "212.133.98.145",
-            "metrics_url": "http://212.133.98.145:9090/metrics",
-            "link": "https://212.133.98.145"
-        },
-    ]
+def can_use_vpn_stats(user_id) -> bool:
+    return int(user_id) in VPN_STATS_ALLOWED_USERS
 
-    def format_bytes(bytes_count, unit="GiB"):
-        units = {
-            "B": ("Bytes", 1),
-            "KiB": ("Kibibytes", 1024),
-            "MiB": ("Mebibytes", 1024**2),
-            "GiB": ("Gibibytes", 1024**3),
-            "TiB": ("Tebibytes", 1024**4),
-        }
 
-        if bytes_count < 0:
-            return "N/A"
+def format_vpn_bytes(bytes_count, unit="GiB"):
+    if bytes_count < 0:
+        return "N/A"
 
-        name, divider = units[unit]
-        value = bytes_count / divider
-        return f"{value:.2f} {name}"
+    name, divider = VPN_STATS_UNITS.get(unit, VPN_STATS_UNITS["GiB"])
+    value = bytes_count / divider
+    return f"{value:.2f} {name}"
 
-    def build_stats(unit="GiB"):
-        result_msg = f"🌐 VPN STATS ({unit})\n\n"
 
-        for server in servers:
-            try:
-                req = requests.get(server["metrics_url"], timeout=5)
-                txt = req.text
+def build_vpn_stats(unit="GiB"):
+    unit = unit if unit in VPN_STATS_UNITS else "GiB"
+    result_msg = f"🌐 VPN STATS ({unit})\n\n"
 
-                recv = -1
-                send = -1
+    for server in VPN_STATS_SERVERS:
+        try:
+            req = requests.get(server["metrics_url"], timeout=5)
+            req.raise_for_status()
+            txt = req.text
 
-                for line in txt.split("\n"):
-                    if line.startswith("process_network_receive_bytes_total"):
-                        recv = int(float(line.split()[1]))
-                    elif line.startswith("process_network_transmit_bytes_total"):
-                        send = int(float(line.split()[1]))
+            recv = -1
+            send = -1
 
-                result_msg += (
-                    f"🔹 {server['name']}\n"
-                    f"🌍 {server['domain']}\n"
-                    f"🔗 {server['link']}\n"
-                    f"⬇ Receive: {format_bytes(recv, unit)}\n"
-                    f"⬆ Transmit: {format_bytes(send, unit)}\n\n"
-                )
+            for line in txt.splitlines():
+                if line.startswith("process_network_receive_bytes_total"):
+                    recv = int(float(line.split()[1]))
+                elif line.startswith("process_network_transmit_bytes_total"):
+                    send = int(float(line.split()[1]))
 
-            except Exception as e:
-                result_msg += (
-                    f"🔹 {server['name']}\n"
-                    f"❌ Error: {e}\n\n"
-                )
+            result_msg += (
+                f"🔹 {server['name']}\n"
+                f"🌍 {server['domain']}\n"
+                f"🔗 {server['link']}\n"
+                f"⬇ Receive: {format_vpn_bytes(recv, unit)}\n"
+                f"⬆ Transmit: {format_vpn_bytes(send, unit)}\n\n"
+            )
+        except Exception as e:
+            result_msg += (
+                f"🔹 {server['name']}\n"
+                f"❌ Error: {e}\n\n"
+            )
 
-        return result_msg
+    return result_msg
 
-    def get_keyboard():
-        kb = InlineKeyboardMarkup()
-        kb.add(
-            InlineKeyboardButton("Bytes", callback_data="stats_B"),
-            InlineKeyboardButton("KiB", callback_data="stats_KiB"),
-            InlineKeyboardButton("MiB", callback_data="stats_MiB"),
-            InlineKeyboardButton("GiB", callback_data="stats_GiB"),
-            InlineKeyboardButton("TiB", callback_data="stats_TiB"),
-        )
-        return kb
 
-    # handler команды
-    @bot.message_handler(commands=["vpnstats"])
-    def vpn_stats(message):
-        if int(message.chat.id) not in users:
-            bot.send_message(message.chat.id, "no access")
-            return
+def get_vpn_stats_keyboard():
+    kb = types.InlineKeyboardMarkup()
+    kb.add(
+        types.InlineKeyboardButton("Bytes", callback_data="stats_B"),
+        types.InlineKeyboardButton("KiB", callback_data="stats_KiB"),
+        types.InlineKeyboardButton("MiB", callback_data="stats_MiB"),
+        types.InlineKeyboardButton("GiB", callback_data="stats_GiB"),
+        types.InlineKeyboardButton("TiB", callback_data="stats_TiB"),
+    )
+    return kb
 
-        msg = build_stats("GiB")
-        bot.send_message(message.chat.id, msg, reply_markup=get_keyboard())
 
-    # handler кнопок
-    @bot.callback_query_handler(func=lambda call: call.data.startswith("stats_"))
-    def change_format(call):
-        unit = call.data.split("_")[1]
-        msg = build_stats(unit)
+@bot.message_handler(commands=["vpnstats"])
+def vpn_stats(message):
+    if not can_use_vpn_stats(message.chat.id):
+        bot.send_message(message.chat.id, "no access")
+        return
 
-        bot.edit_message_text(
-            msg,
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
-            reply_markup=get_keyboard()
-        )
+    msg = build_vpn_stats("GiB")
+    bot.send_message(message.chat.id, msg, reply_markup=get_vpn_stats_keyboard())
 
 
 def ban(call):
