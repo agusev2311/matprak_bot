@@ -1998,68 +1998,110 @@ def why_only_one_file(message):
 """
     bot.send_message(message.chat.id, text)
 
-@bot.message_handler(commands=["vpnstats"])
-def vpn_stats(message):
-    print("vpnstats handler called")
-    print("chat id:", message.chat.id)
+def vpn_stats_handler(bot):
+    from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+    import requests
 
     users = [962799806, 1133611562]
 
-    if int(message.chat.id) not in users:
-        print("user not allowed")
-        bot.send_message(message.chat.id, "no access")
-        return
+    # список серверов
+    servers = [
+        {
+            "name": "🇩🇪 Germany VPN",
+            "domain": "localhost",
+            "metrics_url": "http://localhost:9090/metrics",
+            "link": "https://localhost"
+        },
+        {
+            "name": "🇷🇺 Moscow VPN",
+            "domain": "212.133.98.145",
+            "metrics_url": "http://212.133.98.145:9090/metrics",
+            "link": "https://212.133.98.145"
+        },
+    ]
 
-    try:
-        print("before requests.get")
-        req = requests.get("http://localhost:9090/metrics", timeout=5)
-        print("status:", req.status_code)
+    def format_bytes(bytes_count, unit="GiB"):
+        units = {
+            "B": ("Bytes", 1),
+            "KiB": ("Kibibytes", 1024),
+            "MiB": ("Mebibytes", 1024**2),
+            "GiB": ("Gibibytes", 1024**3),
+            "TiB": ("Tebibytes", 1024**4),
+        }
 
-        txt = req.text
-        print("metrics length:", len(txt))
+        if bytes_count < 0:
+            return "N/A"
 
-        process_network_receive_bytes_total = -1
-        process_network_transmit_bytes_total = -1
+        name, divider = units[unit]
+        value = bytes_count / divider
+        return f"{value:.2f} {name}"
 
-        for i in txt.split("\n"):
-            if i.startswith("process_network_receive_bytes_total"):
-                process_network_receive_bytes_total = int(float(i.split()[1]))
-            elif i.startswith("process_network_transmit_bytes_total"):
-                process_network_transmit_bytes_total = int(float(i.split()[1]))
+    def build_stats(unit="GiB"):
+        result_msg = f"🌐 VPN STATS ({unit})\n\n"
 
-        print("recv:", process_network_receive_bytes_total)
-        print("send:", process_network_transmit_bytes_total)
+        for server in servers:
+            try:
+                req = requests.get(server["metrics_url"], timeout=5)
+                txt = req.text
 
-        def human_readable_binary(bytes_count):
-            import math
-            units = ["B", "KiB", "MiB", "GiB", "TiB"]
+                recv = -1
+                send = -1
 
-            if bytes_count == 0:
-                return "0 B"
-            if bytes_count < 0:
-                return "N/A"
+                for line in txt.split("\n"):
+                    if line.startswith("process_network_receive_bytes_total"):
+                        recv = int(float(line.split()[1]))
+                    elif line.startswith("process_network_transmit_bytes_total"):
+                        send = int(float(line.split()[1]))
 
-            power = int(math.floor(math.log(bytes_count, 1024)))
-            power = min(power, len(units) - 1)
-            value = bytes_count / (1024 ** power)
-            return f"{value:.2f} {units[power]}"
+                result_msg += (
+                    f"🔹 {server['name']}\n"
+                    f"🌍 {server['domain']}\n"
+                    f"🔗 {server['link']}\n"
+                    f"⬇ Receive: {format_bytes(recv, unit)}\n"
+                    f"⬆ Transmit: {format_bytes(send, unit)}\n\n"
+                )
 
-        msg = (
-            f"VPN STATS\n"
-            f"receive: {human_readable_binary(process_network_receive_bytes_total)} "
-            f"({process_network_receive_bytes_total} bytes)\n"
-            f"transmit: {human_readable_binary(process_network_transmit_bytes_total)} "
-            f"({process_network_transmit_bytes_total} bytes)"
+            except Exception as e:
+                result_msg += (
+                    f"🔹 {server['name']}\n"
+                    f"❌ Error: {e}\n\n"
+                )
+
+        return result_msg
+
+    def get_keyboard():
+        kb = InlineKeyboardMarkup()
+        kb.add(
+            InlineKeyboardButton("Bytes", callback_data="stats_B"),
+            InlineKeyboardButton("KiB", callback_data="stats_KiB"),
+            InlineKeyboardButton("MiB", callback_data="stats_MiB"),
+            InlineKeyboardButton("GiB", callback_data="stats_GiB"),
+            InlineKeyboardButton("TiB", callback_data="stats_TiB"),
         )
+        return kb
 
-        print("message to send:", msg)
-        bot.send_message(message.chat.id, msg)
-        print("message sent")
+    # handler команды
+    @bot.message_handler(commands=["vpnstats"])
+    def vpn_stats(message):
+        if int(message.chat.id) not in users:
+            bot.send_message(message.chat.id, "no access")
+            return
 
-    except Exception as e:
-        import traceback
-        print(traceback.format_exc())
-        bot.send_message(message.chat.id, f"something went wrong TwT\n{e}")
+        msg = build_stats("GiB")
+        bot.send_message(message.chat.id, msg, reply_markup=get_keyboard())
+
+    # handler кнопок
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("stats_"))
+    def change_format(call):
+        unit = call.data.split("_")[1]
+        msg = build_stats(unit)
+
+        bot.edit_message_text(
+            msg,
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=get_keyboard()
+        )
 
 
 def ban(call):
