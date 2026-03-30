@@ -38,10 +38,20 @@ try:
 except Exception:
     LESSON_NOTIFICATION_POLL_SECONDS = 30
 
+CHATGPT_CUSTOM_EMOJI_ID = "5438315589087037978"
+CHECK_CUSTOM_EMOJI_ID = "5429501538806548545"
+CROSS_CUSTOM_EMOJI_ID = "5416076321442777828"
+BROADCAST_ALLOWED_CONTENT_TYPES = {
+    "text", "photo", "document", "video", "audio", "voice", "animation", "sticker"
+}
+
 gpt_sql_requests_lock = Lock()
 gpt_sql_requests = {}
 gpt_sql_request_seq = 0
 lesson_notifications_lock = Lock()
+broadcast_drafts_lock = Lock()
+broadcast_drafts = {}
+broadcast_draft_seq = 0
 
 TASKS_COLUMN_ALIASES = {
     "text": "description",
@@ -101,6 +111,95 @@ def can_access_course_materials(user_id: int, course_id: int) -> bool:
         return True
     student_ids = (course[3] or "").split()
     return str(user_id) in student_ids
+
+
+def custom_emoji_html(custom_emoji_id: str, fallback_emoji: str) -> str:
+    return f'<tg-emoji emoji-id="{custom_emoji_id}">{fallback_emoji}</tg-emoji>'
+
+
+CHECK_HTML = custom_emoji_html(CHECK_CUSTOM_EMOJI_ID, "✅")
+CROSS_HTML = custom_emoji_html(CROSS_CUSTOM_EMOJI_ID, "❌")
+CHATGPT_HTML = custom_emoji_html(CHATGPT_CUSTOM_EMOJI_ID, "🤖")
+CUSTOM_EMOJI_HTML_RE = re.compile(r'<tg-emoji\b[^>]*>(.*?)</tg-emoji>', re.DOTALL)
+
+
+def strip_custom_emoji_html(text: str) -> str:
+    return CUSTOM_EMOJI_HTML_RE.sub(lambda match: match.group(1), text)
+
+
+def can_retry_without_custom_emoji(error: Exception) -> bool:
+    error_text = str(error).lower()
+    return (
+        "custom emoji" in error_text
+        or "can't parse entities" in error_text
+        or "emoji-id" in error_text
+    )
+
+
+_raw_send_message = bot.send_message
+_raw_edit_message_text = bot.edit_message_text
+_raw_send_document = bot.send_document
+
+
+def send_message_with_custom_emoji_fallback(chat_id, text, *args, **kwargs):
+    try:
+        return _raw_send_message(chat_id, text, *args, **kwargs)
+    except Exception as error:
+        if isinstance(text, str) and "<tg-emoji" in text and can_retry_without_custom_emoji(error):
+            return _raw_send_message(chat_id, strip_custom_emoji_html(text), *args, **kwargs)
+        raise
+
+
+def edit_message_text_with_custom_emoji_fallback(text, *args, **kwargs):
+    try:
+        return _raw_edit_message_text(text, *args, **kwargs)
+    except Exception as error:
+        if isinstance(text, str) and "<tg-emoji" in text and can_retry_without_custom_emoji(error):
+            return _raw_edit_message_text(strip_custom_emoji_html(text), *args, **kwargs)
+        raise
+
+
+def send_document_with_custom_emoji_fallback(chat_id, document, *args, **kwargs):
+    try:
+        return _raw_send_document(chat_id, document, *args, **kwargs)
+    except Exception as error:
+        caption = kwargs.get("caption")
+        if isinstance(caption, str) and "<tg-emoji" in caption and can_retry_without_custom_emoji(error):
+            fallback_kwargs = dict(kwargs)
+            fallback_kwargs["caption"] = strip_custom_emoji_html(caption)
+            return _raw_send_document(chat_id, document, *args, **fallback_kwargs)
+        raise
+
+
+bot.send_message = send_message_with_custom_emoji_fallback
+bot.edit_message_text = edit_message_text_with_custom_emoji_fallback
+bot.send_document = send_document_with_custom_emoji_fallback
+
+
+def ui_button(text: str, callback_data: str | None = None, style: str | None = None, icon_custom_emoji_id: str | None = None, **kwargs):
+    button_kwargs = dict(kwargs)
+    if callback_data is not None:
+        button_kwargs["callback_data"] = callback_data
+    if style is not None:
+        button_kwargs["style"] = style
+    if icon_custom_emoji_id is not None:
+        button_kwargs["icon_custom_emoji_id"] = icon_custom_emoji_id
+    return types.InlineKeyboardButton(text, **button_kwargs)
+
+
+def verdict_button_custom_emoji_id(verdict) -> str | None:
+    if verdict == "accept":
+        return CHECK_CUSTOM_EMOJI_ID
+    if verdict == "reject":
+        return CROSS_CUSTOM_EMOJI_ID
+    return None
+
+
+def next_broadcast_draft_id() -> int:
+    global broadcast_draft_seq
+    with broadcast_drafts_lock:
+        broadcast_draft_seq += 1
+        return broadcast_draft_seq
 
 
 def normalize_user_action_text(value, max_len: int = 240) -> str:
@@ -177,10 +276,13 @@ def callback_action_name(callback_data: str) -> str:
         ("undo_self_reject", "solution.self_reject_undo"),
         ("admin_panel_open", "admin.panel_open"),
         ("admin_panel_backup", "admin.backup"),
+        ("admin_panel_broadcast", "admin.broadcast_prompt"),
         ("admin_panel_stop", "admin.stop"),
         ("admin_panel_ban", "admin.ban_prompt"),
         ("admin_panel_unban", "admin.unban_prompt"),
         ("admin_panel_conf_stop", "admin.stop_confirm"),
+        ("admin_broadcast_confirm_", "admin.broadcast_confirm"),
+        ("admin_broadcast_cancel_", "admin.broadcast_cancel"),
         ("gptsql_accept_", "gpt_lesson.sql_accept"),
         ("gptsql_reject_", "gpt_lesson.sql_reject"),
         ("gptsql_retry_", "gpt_lesson.sql_retry"),
@@ -319,15 +421,15 @@ def send_saved_file_to_chat(chat_id: int, file_info, caption: str | None = None)
 
 
 VERDICT_LABELS = {
-    "accept": "✅ Принято",
-    "reject": "❌ Отклонено",
+    "accept": f"{CHECK_HTML} Принято",
+    "reject": f"{CROSS_HTML} Отклонено",
     "self_reject": "💔 Отменено автором",
     None: "⌛️ Ожидает проверки",
 }
 
 VERDICT_ICONS = {
-    "accept": "✅",
-    "reject": "❌",
+    "accept": "",
+    "reject": "",
     "self_reject": "💔",
     None: "⌛️",
 }
@@ -379,14 +481,14 @@ def safe_delete_message(chat_id: int, message_id: int | None):
 
 def build_main_menu_markup(user_id: int):
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("✏️ Отправить решение", callback_data='mm_send'))
-    markup.add(types.InlineKeyboardButton("🔍 Принять решение", callback_data='mm_check_0'))
-    markup.add(types.InlineKeyboardButton("📃 Все курсы", callback_data='mm_courses_0'))
-    markup.add(types.InlineKeyboardButton("🗂 Все решения", callback_data='mm_answers_0'))
+    markup.add(ui_button("✏️ Отправить решение", callback_data='mm_send'))
+    markup.add(ui_button("🔍 Принять решение", callback_data='mm_check_0', style="primary"))
+    markup.add(ui_button("📃 Все курсы", callback_data='mm_courses_0'))
+    markup.add(ui_button("🗂 Все решения", callback_data='mm_answers_0'))
     if can_use_vpn_stats(user_id):
-        markup.add(types.InlineKeyboardButton("🌐 VPN статистика", callback_data='stats_GiB'))
+        markup.add(ui_button("🌐 VPN статистика", callback_data='stats_GiB', style="primary"))
     if int(user_id) == get_admin_id():
-        markup.add(types.InlineKeyboardButton("🔑 Панель админа", callback_data="admin_panel_open"))
+        markup.add(ui_button("🔑 Панель админа", callback_data="admin_panel_open", style="primary"))
     return markup
 
 
@@ -431,8 +533,8 @@ def can_access_solution(user_id: int, solution_data: dict | None) -> bool:
 
 def build_solution_list_button_text(solution_data: dict, viewer_id: int) -> str:
     role_icon = "👨‍🎓" if int(solution_data["student_id"]) == int(viewer_id) else "👨‍🏫"
-    verdict_icon = VERDICT_ICONS.get(solution_data.get("verdict"), "⌛️")
     file_icon = "📎" if solution_data.get("files_id") else ""
+    status_icon = VERDICT_ICONS.get(solution_data.get("verdict"), "⌛️")
 
     if int(solution_data["student_id"]) == int(viewer_id):
         owner_part = ""
@@ -445,7 +547,10 @@ def build_solution_list_button_text(solution_data: dict, viewer_id: int) -> str:
         f"{shorten_text(solution_data.get('lesson_title'), 14)} / "
         f"#{solution_data.get('task_id')} {shorten_text(solution_data.get('task_title'), 12)}"
     )
-    return shorten_text(f"{role_icon}{verdict_icon}{file_icon} {body}", 64)
+    prefix = f"{role_icon}{file_icon}"
+    if status_icon:
+        prefix += status_icon
+    return shorten_text(f"{prefix} {body}", 64)
 
 
 def build_solution_detail_text(solution_data: dict, comment_override: str | None = None) -> str:
@@ -513,18 +618,19 @@ def build_admin_panel_text(confirm_stop: bool = False) -> str:
 def build_admin_panel_markup(confirm_stop: bool = False):
     markup = types.InlineKeyboardMarkup()
     markup.row(
-        types.InlineKeyboardButton("🔒 Забанить", callback_data='admin_panel_ban'),
-        types.InlineKeyboardButton("🔓 Разбанить", callback_data='admin_panel_unban')
+        ui_button("🔒 Забанить", callback_data='admin_panel_ban', style="danger", icon_custom_emoji_id=CROSS_CUSTOM_EMOJI_ID),
+        ui_button("🔓 Разбанить", callback_data='admin_panel_unban', style="success", icon_custom_emoji_id=CHECK_CUSTOM_EMOJI_ID)
     )
-    markup.add(types.InlineKeyboardButton("📦 Отправить бэкап", callback_data="admin_panel_backup"))
+    markup.add(ui_button("📣 Рассылка", callback_data="admin_panel_broadcast", style="primary"))
+    markup.add(ui_button("📦 Отправить бэкап", callback_data="admin_panel_backup", style="primary"))
     if confirm_stop:
         markup.row(
-            types.InlineKeyboardButton("🛑 Подтвердить", callback_data='admin_panel_stop'),
-            types.InlineKeyboardButton("↩️ Отменить", callback_data='admin_panel_open')
+            ui_button("Подтвердить", callback_data='admin_panel_stop', style="danger", icon_custom_emoji_id=CROSS_CUSTOM_EMOJI_ID),
+            ui_button("↩️ Отменить", callback_data='admin_panel_open', style="primary")
         )
     else:
-        markup.add(types.InlineKeyboardButton("🛑 Остановить бота", callback_data="admin_panel_conf_stop"))
-    markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
+        markup.add(ui_button("🛑 Остановить бота", callback_data="admin_panel_conf_stop", style="danger", icon_custom_emoji_id=CROSS_CUSTOM_EMOJI_ID))
+    markup.add(ui_button("🏠 Главное меню", callback_data="mm_main_menu"))
     return markup
 
 
@@ -541,15 +647,50 @@ def parse_user_ids_text(text: str) -> tuple[list[int], list[str]]:
     return valid_ids, invalid_tokens
 
 
+def build_broadcast_preview_html(message) -> str:
+    content_type_names = {
+        "text": "Текст",
+        "photo": "Фото",
+        "document": "Документ",
+        "video": "Видео",
+        "audio": "Аудио",
+        "voice": "Голосовое сообщение",
+        "animation": "Анимация",
+        "sticker": "Стикер",
+    }
+    preview_html = message.html_text or message.html_caption
+    if preview_html:
+        quoted = f"<blockquote>{preview_html}</blockquote>"
+    else:
+        quoted = "<blockquote><i>Сообщение без текста или подписи.</i></blockquote>"
+
+    return (
+        "<b>Подтвердите рассылку</b>\n"
+        f"<b>Тип сообщения:</b> {html.escape(content_type_names.get(message.content_type, message.content_type))}\n"
+        "Сообщение будет отправлено всем зарегистрированным пользователям в точности как оригинал.\n\n"
+        f"{quoted}"
+    )
+
+
+def build_broadcast_confirm_markup(draft_id: int):
+    markup = types.InlineKeyboardMarkup()
+    markup.row(
+        ui_button("Отправить всем", callback_data=f"admin_broadcast_confirm_{draft_id}", style="danger", icon_custom_emoji_id=CHECK_CUSTOM_EMOJI_ID),
+        ui_button("Отменить", callback_data=f"admin_broadcast_cancel_{draft_id}", style="primary")
+    )
+    markup.add(ui_button("🔑 Панель админа", callback_data="admin_panel_open"))
+    return markup
+
+
 def build_solution_view_markup(solution_data: dict, viewer_id: int, page: int = 0):
     markup = types.InlineKeyboardMarkup()
     if solution_data.get("files_id"):
-        markup.add(types.InlineKeyboardButton("📎 Открыть файл решения", callback_data=f"download_solution_file_{solution_data['answer_id']}"))
+        markup.add(ui_button("📎 Открыть файл решения", callback_data=f"download_solution_file_{solution_data['answer_id']}"))
     if int(solution_data["student_id"]) == int(viewer_id) and solution_data["verdict"] is None:
-        markup.add(types.InlineKeyboardButton("💔 Отменить", callback_data=f"self_reject_{solution_data['answer_id']}_{page}"))
+        markup.add(ui_button("💔 Отменить", callback_data=f"self_reject_{solution_data['answer_id']}_{page}", style="danger", icon_custom_emoji_id=CROSS_CUSTOM_EMOJI_ID))
     if int(solution_data["student_id"]) == int(viewer_id) and solution_data["verdict"] == "self_reject":
-        markup.add(types.InlineKeyboardButton("❤️‍🩹 Восстановить", callback_data=f"undo_self_reject_{solution_data['answer_id']}_{page}"))
-    markup.add(types.InlineKeyboardButton("🗂 Все решения", callback_data=f"mm_answers_{page}"))
+        markup.add(ui_button("❤️‍🩹 Восстановить", callback_data=f"undo_self_reject_{solution_data['answer_id']}_{page}", style="success", icon_custom_emoji_id=CHECK_CUSTOM_EMOJI_ID))
+    markup.add(ui_button("🗂 Все решения", callback_data=f"mm_answers_{page}"))
     return markup
 
 
@@ -557,13 +698,13 @@ def build_check_solution_markup(solution_data: dict, check_type: str):
     answer_id = solution_data["answer_id"]
     markup = types.InlineKeyboardMarkup()
     markup.row(
-        types.InlineKeyboardButton("✅ Принять", callback_data=f"check-final_accept_{answer_id}"),
-        types.InlineKeyboardButton("❌ Отклонить", callback_data=f"check-final_reject_{answer_id}")
+        ui_button("Принять", callback_data=f"check-final_accept_{answer_id}", style="success", icon_custom_emoji_id=CHECK_CUSTOM_EMOJI_ID),
+        ui_button("Отклонить", callback_data=f"check-final_reject_{answer_id}", style="danger", icon_custom_emoji_id=CROSS_CUSTOM_EMOJI_ID)
     )
-    markup.add(types.InlineKeyboardButton("✍️ Добавить комментарий", callback_data=f"check-add-comment_{check_type}_{answer_id}"))
+    markup.add(ui_button("✍️ Добавить комментарий", callback_data=f"check-add-comment_{check_type}_{answer_id}", style="primary"))
     if solution_data.get("files_id"):
-        markup.add(types.InlineKeyboardButton("📎 Открыть файл решения", callback_data=f"download_solution_file_{answer_id}"))
-    markup.add(types.InlineKeyboardButton("⬅️ К проверке", callback_data="mm_check_0"))
+        markup.add(ui_button("📎 Открыть файл решения", callback_data=f"download_solution_file_{answer_id}"))
+    markup.add(ui_button("⬅️ К проверке", callback_data="mm_check_0"))
     return markup
 
 
@@ -859,10 +1000,10 @@ def normalize_lesson_sql(sql_text: str) -> str:
 def get_gpt_sql_review_markup(request_id: int):
     markup = types.InlineKeyboardMarkup()
     markup.row(
-        types.InlineKeyboardButton("✅ Применить", callback_data=f"gptsql_accept_{request_id}"),
-        types.InlineKeyboardButton("❌ Отклонить", callback_data=f"gptsql_reject_{request_id}")
+        ui_button("Применить", callback_data=f"gptsql_accept_{request_id}", style="success", icon_custom_emoji_id=CHECK_CUSTOM_EMOJI_ID),
+        ui_button("Отклонить", callback_data=f"gptsql_reject_{request_id}", style="danger", icon_custom_emoji_id=CROSS_CUSTOM_EMOJI_ID)
     )
-    markup.add(types.InlineKeyboardButton("🔁 На повторную проверку", callback_data=f"gptsql_retry_{request_id}"))
+    markup.add(ui_button("Отправить в ChatGPT повторно", callback_data=f"gptsql_retry_{request_id}", style="primary", icon_custom_emoji_id=CHATGPT_CUSTOM_EMOJI_ID))
     return markup
 
 
@@ -957,9 +1098,17 @@ def run_gpt_sql_generation(request_id: int, admin_feedback: str | None = None):
                 request["status"] = "error"
 
         error_text = f"{type(error).__name__}: {error}"
-        bot.send_message(initiator_id, f"❌ Не удалось получить SQL от GPT: {error_text}")
+        bot.send_message(
+            initiator_id,
+            f"{CROSS_HTML} Не удалось получить SQL от ChatGPT: {html.escape(error_text)}",
+            parse_mode="HTML"
+        )
         if initiator_id != get_admin_id():
-            bot.send_message(get_admin_id(), f"❌ Ошибка GPT в заявке #{request_id}: {error_text}")
+            bot.send_message(
+                get_admin_id(),
+                f"{CROSS_HTML} Ошибка ChatGPT в заявке #{request_id}: {html.escape(error_text)}",
+                parse_mode="HTML"
+            )
         return
 
     with gpt_sql_requests_lock:
@@ -975,7 +1124,11 @@ def run_gpt_sql_generation(request_id: int, admin_feedback: str | None = None):
     if admin_feedback:
         bot.send_message(initiator_id, f"🔁 SQL по заявке #{request_id} исправлен и снова отправлен администратору.")
     else:
-        bot.send_message(initiator_id, f"✅ SQL по заявке #{request_id} отправлен администратору на проверку.")
+        bot.send_message(
+            initiator_id,
+            f"{CHECK_HTML} SQL по заявке #{request_id} отправлен администратору на проверку.",
+            parse_mode="HTML"
+        )
 
 
 def gpt_add_lesson_start(call, course_id: int):
@@ -988,10 +1141,11 @@ def gpt_add_lesson_start(call, course_id: int):
 
     bot.edit_message_text(
         "Отправьте фото листка или PDF с задачами.\n\n"
-        "После загрузки я отправлю файл в GPT и подготовлю SQL для проверки админом.\n"
+        f"После загрузки я отправлю файл в {CHATGPT_HTML} и подготовлю SQL для проверки админом.\n"
         "Для отмены отправьте /cancel.",
         chat_id=call.message.chat.id,
-        message_id=call.message.message_id
+        message_id=call.message.message_id,
+        parse_mode="HTML"
     )
     bot.register_next_step_handler(call.message, gpt_add_lesson_receive_file, course_id)
 
@@ -1049,7 +1203,8 @@ def gpt_add_lesson_receive_file(message, course_id: int):
 
     bot.send_message(
         message.chat.id,
-        f"Файл получен. Запускаю GPT и готовлю SQL (заявка #{request_id}). Это может занять до минуты."
+        f"Файл получен. Запускаю {CHATGPT_HTML} и готовлю SQL (заявка #{request_id}). Это может занять до минуты.",
+        parse_mode="HTML"
     )
     Thread(target=run_gpt_sql_generation, args=(request_id,), daemon=True).start()
 
@@ -1081,18 +1236,30 @@ def gpt_sql_accept(call, request_id: int):
             conn.executescript(sql_to_execute)
             conn.commit()
     except Exception as error:
-        bot.send_message(call.message.chat.id, f"❌ Ошибка применения SQL по заявке #{request_id}: {error}")
+        bot.send_message(
+            call.message.chat.id,
+            f"{CROSS_HTML} Ошибка применения SQL по заявке #{request_id}: {html.escape(str(error))}",
+            parse_mode="HTML"
+        )
         return
 
     with gpt_sql_requests_lock:
         gpt_sql_requests.pop(request_id, None)
 
     sql_return.log_action(call.from_user.id, "gpt_lesson_request_accepted", f"{request_id}")
-    bot.send_message(call.message.chat.id, f"✅ SQL из заявки #{request_id} применен к базе.")
+    bot.send_message(
+        call.message.chat.id,
+        f"{CHECK_HTML} SQL из заявки #{request_id} применен к базе.",
+        parse_mode="HTML"
+    )
     Thread(target=process_pending_lesson_notifications, args=("gpt_sql_accept",), daemon=True).start()
 
     if request["initiator_id"] != call.from_user.id:
-        bot.send_message(request["initiator_id"], f"✅ Админ подтвердил заявку #{request_id}. SQL применен к базе.")
+        bot.send_message(
+            request["initiator_id"],
+            f"{CHECK_HTML} Админ подтвердил заявку #{request_id}. SQL применен к базе.",
+            parse_mode="HTML"
+        )
 
 
 def gpt_sql_reject(call, request_id: int):
@@ -1111,7 +1278,11 @@ def gpt_sql_reject(call, request_id: int):
     bot.send_message(call.message.chat.id, f"🗑 Заявка #{request_id} отклонена.")
 
     if request["initiator_id"] != call.from_user.id:
-        bot.send_message(request["initiator_id"], f"❌ Админ отклонил заявку #{request_id}.")
+        bot.send_message(
+            request["initiator_id"],
+            f"{CROSS_HTML} Админ отклонил заявку #{request_id}.",
+            parse_mode="HTML"
+        )
 
 
 def gpt_sql_retry(call, request_id: int):
@@ -1128,7 +1299,8 @@ def gpt_sql_retry(call, request_id: int):
     bot.send_message(
         call.message.chat.id,
         f"Введите комментарий с ошибками для заявки #{request_id}. "
-        "Я отправлю его в GPT для исправления SQL.\nДля отмены отправьте /cancel."
+        f"Я отправлю его в {CHATGPT_HTML} для исправления SQL.\nДля отмены отправьте /cancel.",
+        parse_mode="HTML"
     )
     bot.register_next_step_handler(call.message, gpt_sql_retry_feedback, request_id)
 
@@ -1162,7 +1334,11 @@ def gpt_sql_retry_feedback(message, request_id: int):
             return
 
     sql_return.log_action(message.from_user.id, "gpt_lesson_request_retry", f"{request_id} {feedback}")
-    bot.send_message(message.chat.id, f"🔄 Запросил исправление SQL у GPT для заявки #{request_id}.")
+    bot.send_message(
+        message.chat.id,
+        f"🔄 Запросил исправление SQL у {CHATGPT_HTML} для заявки #{request_id}.",
+        parse_mode="HTML"
+    )
     Thread(target=run_gpt_sql_generation, args=(request_id, feedback), daemon=True).start()
 
 @bot.message_handler(commands=["start"])
@@ -1196,9 +1372,9 @@ def register_name(message):
 
         bot.reply_to(message, "Мы отправили сообщение администратору. Теперь ожидайте подтверждения.")
         markup = types.InlineKeyboardMarkup()
-        button1 = types.InlineKeyboardButton("✅ Принять", callback_data=f'reg_approve_{message.from_user.id}')
-        button2 = types.InlineKeyboardButton("🟡 Отклонить", callback_data=f'reg_deny_{message.from_user.id}')
-        button3 = types.InlineKeyboardButton("❌ Забанить", callback_data=f'reg_ban_{message.from_user.id}')
+        button1 = ui_button("Принять", callback_data=f'reg_approve_{message.from_user.id}', style="success", icon_custom_emoji_id=CHECK_CUSTOM_EMOJI_ID)
+        button2 = ui_button("Отклонить", callback_data=f'reg_deny_{message.from_user.id}', style="danger", icon_custom_emoji_id=CROSS_CUSTOM_EMOJI_ID)
+        button3 = ui_button("Забанить", callback_data=f'reg_ban_{message.from_user.id}', style="danger", icon_custom_emoji_id=CROSS_CUSTOM_EMOJI_ID)
         markup.add(button1)
         markup.add(button2, button3)
         bot.send_message(int(config["admin_id"]), f"@{message.from_user.username} ({message.from_user.id}) регистрируется как {name[0]} {name[1]}", reply_markup=markup)
@@ -1338,6 +1514,8 @@ def handle_query(call):
         admin_panel(call)
     elif call.data.startswith("admin_panel_backup"):
         admin_backup(call)
+    elif call.data.startswith("admin_panel_broadcast"):
+        admin_broadcast_start(call)
     elif call.data.startswith("admin_panel_stop"):
         stop(call)
     elif call.data.startswith("admin_panel_ban"):
@@ -1346,6 +1524,10 @@ def handle_query(call):
         unban(call)
     elif call.data.startswith("admin_panel_conf_stop"):
         stop_confirm(call)
+    elif call.data.startswith("admin_broadcast_confirm_"):
+        admin_broadcast_confirm(call, int(call.data.split("_")[-1]))
+    elif call.data.startswith("admin_broadcast_cancel_"):
+        admin_broadcast_cancel(call, int(call.data.split("_")[-1]))
     elif call.data.startswith("gptsql_accept_"):
         gpt_sql_accept(call, int(call.data.split("_")[-1]))
     elif call.data.startswith("gptsql_reject_"):
@@ -1364,7 +1546,8 @@ def handle_query(call):
                 msg,
                 chat_id=call.message.chat.id,
                 message_id=call.message.message_id,
-                reply_markup=get_vpn_stats_keyboard()
+                reply_markup=get_vpn_stats_keyboard(),
+                parse_mode="HTML"
             )
         except Exception as e:
             if "message is not modified" not in str(e).lower():
@@ -1682,9 +1865,10 @@ def mm_answers(call, page=0):
     for solution_data in page_solutions:
         button_text = build_solution_list_button_text(solution_data, call.from_user.id)
         markup.add(
-            types.InlineKeyboardButton(
+            ui_button(
                 button_text,
-                callback_data=f"solution_{solution_data['answer_id']}_{page}"
+                callback_data=f"solution_{solution_data['answer_id']}_{page}",
+                icon_custom_emoji_id=verdict_button_custom_emoji_id(solution_data.get("verdict"))
             )
         )
 
@@ -1787,20 +1971,24 @@ def check_final(call, answer_id: int, verdict: str):
     sql_return.check_student_answer(verdict, comment, answer_id)
     sa_data = sql_return.get_student_answer_from_id(answer_id)
     if verdict == "accept":
-        verdict_message = "✅ Вердикт: верно"
+        verdict_message = f"{CHECK_HTML} Вердикт: верно"
     else:
-        verdict_message = "❌ Вердикт: неверно"
+        verdict_message = f"{CROSS_HTML} Вердикт: неверно"
 
     comment2 = ""
     if comment:
-        comment2 = f"\n📜 Комментарий: {comment}"
-    bot.send_message(sa_data[2], f"""🥳 Ваше решение проверено!
+        comment2 = f"\n📜 Комментарий: {html.escape(comment)}"
+    bot.send_message(
+        sa_data[2],
+        f"""🥳 Ваше решение проверено!
 
-Курс: {sql_return.get_course_name(sql_return.get_course_from_answer_id(answer_id))}
-Урок: {sql_return.get_lesson_name(sql_return.get_lesson_from_answer_id(answer_id))}
-Задача: {sql_return.get_task_name(sql_return.get_task_from_answer_id(answer_id))}
-📝 Текст решения:\n{sa_data[3]}
-{verdict_message}{comment2}""")
+Курс: {html.escape(str(sql_return.get_course_name(sql_return.get_course_from_answer_id(answer_id)) or 'Неизвестно'))}
+Урок: {html.escape(str(sql_return.get_lesson_name(sql_return.get_lesson_from_answer_id(answer_id)) or 'Неизвестно'))}
+Задача: {html.escape(str(sql_return.get_task_name(sql_return.get_task_from_answer_id(answer_id)) or 'Неизвестно'))}
+📝 Текст решения:\n{html.escape(str(sa_data[3] or 'Нет текста'))}
+{verdict_message}{comment2}""",
+        parse_mode="HTML"
+    )
 
     sql_return.log_action(call.from_user.id, "check_final", f"{answer_id}")
     mm_check(call)
@@ -1927,7 +2115,7 @@ def course_info(call):
         markup.add(types.InlineKeyboardButton("➕ Добавить разработчика", callback_data=f'add_developer_{course_id}'))
     markup.add(types.InlineKeyboardButton("📂 Содержание", callback_data=f"content_{course_id}_0"))
     if can_use_gpt_lesson_button(call.from_user.id):
-        markup.add(types.InlineKeyboardButton("🤖 Добавить урок (GPT)", callback_data=f"gpt_add_lesson_{course_id}"))
+        markup.add(ui_button("Добавить урок", callback_data=f"gpt_add_lesson_{course_id}", style="primary", icon_custom_emoji_id=CHATGPT_CUSTOM_EMOJI_ID))
     markup.add(types.InlineKeyboardButton("📃 К курсам", callback_data="mm_courses_0"))
 
     bot.edit_message_text(course_info, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
@@ -2011,7 +2199,7 @@ def course_content(call, course_id, page=0):
         if is_admin or is_dev:
             markup.add(types.InlineKeyboardButton("➕ Создать урок", callback_data=f'create_lesson_{course_id}'))
         if can_use_gpt:
-            markup.add(types.InlineKeyboardButton("🤖 Добавить урок (GPT)", callback_data=f'gpt_add_lesson_{course_id}'))
+            markup.add(ui_button("Добавить урок", callback_data=f'gpt_add_lesson_{course_id}', style="primary", icon_custom_emoji_id=CHATGPT_CUSTOM_EMOJI_ID))
         markup.add(types.InlineKeyboardButton("🔙 К курсу", callback_data=f"course_{course_id}"))
         bot.send_message(call.message.chat.id, "В этом курсе пока нет уроков.", reply_markup=markup)
         return
@@ -2042,7 +2230,7 @@ def course_content(call, course_id, page=0):
     if (is_admin or is_dev) and page == 0:
         markup.add(types.InlineKeyboardButton("➕ Создать урок", callback_data=f'create_lesson_{course_id}'))
     if can_use_gpt and page == 0:
-        markup.add(types.InlineKeyboardButton("🤖 Добавить урок (GPT)", callback_data=f'gpt_add_lesson_{course_id}'))
+        markup.add(ui_button("Добавить урок", callback_data=f'gpt_add_lesson_{course_id}', style="primary", icon_custom_emoji_id=CHATGPT_CUSTOM_EMOJI_ID))
 
     markup.add(types.InlineKeyboardButton("🔙 К курсу", callback_data=f"course_{course_id}"))
 
@@ -2228,27 +2416,27 @@ def create_course_developers(message, editing_message_id, course_name):
     if message.text.lower() == "cancel":
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
-        bot.edit_message_text("❌ Создание курса отменено", chat_id=message.chat.id, message_id=editing_message_id, reply_markup=markup)
+        bot.edit_message_text(f"{CROSS_HTML} Создание курса отменено", chat_id=message.chat.id, message_id=editing_message_id, reply_markup=markup, parse_mode="HTML")
         return
     
     if message.text.lower() == "none":
         sql_return.create_course(course_name, message.from_user.id, str(message.from_user.id))
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
-        bot.edit_message_text(f"""✅ Курс "{course_name}" успешно создан!""", chat_id=message.chat.id, message_id=editing_message_id, reply_markup=markup)
+        bot.edit_message_text(f"""{CHECK_HTML} Курс "{html.escape(course_name)}" успешно создан!""", chat_id=message.chat.id, message_id=editing_message_id, reply_markup=markup, parse_mode="HTML")
         return
         
     try:
         developers = [int(dev_id) for dev_id in developers]
     except ValueError:
-        bot.edit_message_text("""🎓 Вы создаёте курс.
+        bot.edit_message_text(f"""🎓 Вы создаёте курс.
                           
 📋 Информация о курсе: 
-👨‍🏫 Создатель курса: {sql_return.get_user_name(message.from_user.id)[0]} {sql_return.get_user_name(message.from_user.id)[1]} ({message.from_user.id})
-📚 Название курса: {course_name}
+👨‍🏫 Создатель курса: {html.escape(str(sql_return.get_user_name(message.from_user.id)[0]))} {html.escape(str(sql_return.get_user_name(message.from_user.id)[1]))} ({message.from_user.id})
+📚 Название курса: {html.escape(course_name)}
 👥 Разработчики: -
 
-❌ Ошибка: ID разработчиков должны быть числами. Пожалуйста, введите ID через пробел (например: 123456789 987654321)""", chat_id=message.chat.id, message_id=editing_message_id)
+{CROSS_HTML} Ошибка: ID разработчиков должны быть числами. Пожалуйста, введите ID через пробел (например: 123456789 987654321)""", chat_id=message.chat.id, message_id=editing_message_id, parse_mode="HTML")
         bot.register_next_step_handler(message, create_course_developers, editing_message_id, course_name)
         return
     
@@ -2262,7 +2450,7 @@ def create_course_developers(message, editing_message_id, course_name):
     sql_return.log_action(message.from_user.id, "create_course", f"{sql_return.last_course_id()} {course_name} {message.from_user.id} {developers}")
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
-    bot.edit_message_text(f"""✅ Курс "{course_name}" успешно создан!""", chat_id=message.chat.id, message_id=editing_message_id, reply_markup=markup)
+    bot.edit_message_text(f"""{CHECK_HTML} Курс "{html.escape(course_name)}" успешно создан!""", chat_id=message.chat.id, message_id=editing_message_id, reply_markup=markup, parse_mode="HTML")
 
 def create_lesson(call):
     bot.edit_message_text(f"""🎓 Вы создаёте урок.
@@ -2286,7 +2474,7 @@ def create_lesson_name(message, editing_message_id, course_id):
     Thread(target=process_pending_lesson_notifications, args=("create_lesson",), daemon=True).start()
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("🔙 К списку уроков", callback_data=f"content_{course_id}_0"))
-    bot.edit_message_text(f"""✅ Урок "{name}" успешно создан!""", chat_id=message.chat.id, message_id=editing_message_id, reply_markup=markup)
+    bot.edit_message_text(f"""{CHECK_HTML} Урок "{html.escape(name)}" успешно создан!""", chat_id=message.chat.id, message_id=editing_message_id, reply_markup=markup, parse_mode="HTML")
 
 def attach_lesson_file(call, course_id: int, lesson_id: int):
     if not is_course_admin_or_dev(call.from_user.id, course_id):
@@ -2454,7 +2642,7 @@ def create_task_description(message, editing_message_id, lesson_id, course_id, t
     sql_return.log_action(message.from_user.id, "create_task", f"{sql_return.last_task_id()} {lesson_id} {course_id} {task_name} {task_description}")
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("🔙 К списку задач", callback_data=f"lesson_{course_id}_{lesson_id}_0"))
-    bot.edit_message_text(f"""✅ Задача "{task_name}" успешно создана!""", chat_id=message.chat.id, message_id=editing_message_id, reply_markup=markup)
+    bot.edit_message_text(f"""{CHECK_HTML} Задача "{html.escape(task_name)}" успешно создана!""", chat_id=message.chat.id, message_id=editing_message_id, reply_markup=markup, parse_mode="HTML")
 
 @bot.message_handler(commands=["support"])
 def support(message):
@@ -2561,7 +2749,7 @@ def build_vpn_stats(unit="GiB"):
         except Exception as e:
             result_msg += (
                 f"🔹 {server['name']}\n"
-                f"❌ Error: {e}\n\n"
+                f"{CROSS_HTML} Error: {html.escape(str(e))}\n\n"
             )
 
     return result_msg
@@ -2570,13 +2758,13 @@ def build_vpn_stats(unit="GiB"):
 def get_vpn_stats_keyboard():
     kb = types.InlineKeyboardMarkup()
     kb.add(
-        types.InlineKeyboardButton("Bytes", callback_data="stats_B"),
-        types.InlineKeyboardButton("KiB", callback_data="stats_KiB"),
-        types.InlineKeyboardButton("MiB", callback_data="stats_MiB"),
-        types.InlineKeyboardButton("GiB", callback_data="stats_GiB"),
-        types.InlineKeyboardButton("TiB", callback_data="stats_TiB"),
+        ui_button("Bytes", callback_data="stats_B"),
+        ui_button("KiB", callback_data="stats_KiB"),
+        ui_button("MiB", callback_data="stats_MiB"),
+        ui_button("GiB", callback_data="stats_GiB", style="primary"),
+        ui_button("TiB", callback_data="stats_TiB"),
     )
-    kb.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
+    kb.add(ui_button("🏠 Главное меню", callback_data="mm_main_menu"))
     return kb
 
 
@@ -2587,7 +2775,7 @@ def vpn_stats(message):
         return
 
     msg = build_vpn_stats("GiB")
-    bot.send_message(message.chat.id, msg, reply_markup=get_vpn_stats_keyboard())
+    bot.send_message(message.chat.id, msg, reply_markup=get_vpn_stats_keyboard(), parse_mode="HTML")
 
 
 def ban(call):
@@ -2710,7 +2898,7 @@ def stop(call):
    
     if call.from_user.id == get_admin_id():
         bot.send_message(call.message.chat.id, "Подождите...")
-        broadcast("❌ Бот временно закрыт на технические работы.")
+        broadcast(f"{CROSS_HTML} Бот временно закрыт на технические работы.")
         is_polling = False
         bot.send_message(call.message.chat.id, "Бот успешно отправил все сообщения.")
         bot.stop_polling()
@@ -2718,7 +2906,10 @@ def stop(call):
 def broadcast(message: str):
     for i in sql_return.all_users():
         try:
-            bot.send_message(i[0], message)
+            kwargs = {}
+            if "<tg-emoji" in message or "<blockquote>" in message:
+                kwargs["parse_mode"] = "HTML"
+            bot.send_message(i[0], message, **kwargs)
         except:
             pass
 
@@ -2747,7 +2938,109 @@ def admin_backup(call):
     bot.send_message(call.message.chat.id, "Запускаю бэкап, сейчас пришлю архивы.")
     Thread(target=backup_databases_and_files_split, daemon=True).start()
 
-broadcast("✅ Бот снова работает!")
+def admin_broadcast_start(call):
+    if call.from_user.id != get_admin_id():
+        return
+    prompt = bot.send_message(
+        call.message.chat.id,
+        "Отправьте одно сообщение, которое нужно разослать всем пользователям.\n"
+        "Поддерживаются текст, фото, документы, видео, аудио, голосовые, анимации и стикеры.\n"
+        "Для отмены отправьте /cancel."
+    )
+    bot.register_next_step_handler(prompt, admin_broadcast_receive)
+
+def admin_broadcast_receive(message):
+    if message.from_user.id != get_admin_id():
+        return
+
+    log_user_action(
+        message.from_user,
+        "admin.broadcast_input",
+        f"content_type={message.content_type}"
+    )
+
+    if message.content_type == "text" and (message.text or "").strip().lower() in {"/cancel", "cancel"}:
+        bot.send_message(message.chat.id, "Рассылка отменена.", reply_markup=build_admin_panel_markup())
+        return
+
+    if message.content_type not in BROADCAST_ALLOWED_CONTENT_TYPES:
+        bot.send_message(
+            message.chat.id,
+            "Этот тип сообщения пока не поддерживается для рассылки. Попробуйте другой формат или /cancel."
+        )
+        bot.register_next_step_handler(message, admin_broadcast_receive)
+        return
+
+    draft_id = next_broadcast_draft_id()
+    with broadcast_drafts_lock:
+        broadcast_drafts[draft_id] = {
+            "draft_id": draft_id,
+            "from_chat_id": message.chat.id,
+            "message_id": message.message_id,
+            "created_by": message.from_user.id,
+            "content_type": message.content_type,
+            "created_at": time.time(),
+        }
+
+    bot.send_message(
+        message.chat.id,
+        build_broadcast_preview_html(message),
+        parse_mode="HTML",
+        reply_markup=build_broadcast_confirm_markup(draft_id)
+    )
+
+def admin_broadcast_confirm(call, draft_id: int):
+    if call.from_user.id != get_admin_id():
+        return
+
+    with broadcast_drafts_lock:
+        draft = broadcast_drafts.pop(draft_id, None)
+
+    if not draft:
+        bot.send_message(call.message.chat.id, "Черновик рассылки не найден или уже обработан.")
+        return
+
+    status_message = bot.send_message(call.message.chat.id, "Начинаю рассылку...")
+    sent_count = 0
+    failed_count = 0
+    for user in sql_return.all_users():
+        user_id = user[0]
+        try:
+            bot.copy_message(
+                user_id,
+                draft["from_chat_id"],
+                draft["message_id"]
+            )
+            sent_count += 1
+        except Exception as error:
+            failed_count += 1
+            log(f"broadcast failed: user_id={user_id} error={error}")
+
+    sql_return.log_action(call.from_user.id, "admin_broadcast", f"draft_id={draft_id} sent={sent_count} failed={failed_count}")
+    safe_delete_message(call.message.chat.id, call.message.message_id)
+    safe_delete_message(status_message.chat.id, status_message.message_id)
+    bot.send_message(
+        call.message.chat.id,
+        f"{CHECK_HTML} Рассылка завершена.\nОтправлено: {sent_count}\nОшибок: {failed_count}",
+        parse_mode="HTML",
+        reply_markup=build_admin_panel_markup()
+    )
+
+def admin_broadcast_cancel(call, draft_id: int):
+    if call.from_user.id != get_admin_id():
+        return
+
+    with broadcast_drafts_lock:
+        broadcast_drafts.pop(draft_id, None)
+
+    safe_delete_message(call.message.chat.id, call.message.message_id)
+    bot.send_message(
+        call.message.chat.id,
+        "Рассылка отменена.",
+        reply_markup=build_admin_panel_markup()
+    )
+
+broadcast(f"{CHECK_HTML} Бот снова работает!")
 
 # def infinite_update():
 #     print("infinite_update started")
@@ -2862,7 +3155,7 @@ def send_daily_error_summary(only_if_errors: bool = True) -> None:
         summary = (
             "Ежедневная статистика ошибок "
             f"({since.strftime('%Y-%m-%d %H:%M:%S')} – {until.strftime('%Y-%m-%d %H:%M:%S')}): "
-            "ошибок нет ✅"
+            f"ошибок нет {CHECK_HTML}"
         )
     else:
         lines = [
@@ -2873,7 +3166,8 @@ def send_daily_error_summary(only_if_errors: bool = True) -> None:
             lines.append(f"{count}× {sig}")
         summary = "\n".join(lines)
     try:
-        bot.send_message(config["admin_id"], summary)
+        kwargs = {"parse_mode": "HTML"} if "<tg-emoji" in summary else {}
+        bot.send_message(config["admin_id"], summary, **kwargs)
     except Exception:
         log("error: failed to send daily error summary")
 
@@ -2899,7 +3193,10 @@ def safe_int(x, default=0) -> int:
 def send_file_to_admin(path: str, caption: str = "") -> None:
     admin_id = safe_int(config.get("admin_id"))
     with open(path, "rb") as f:
-        bot.send_document(admin_id, f, caption=caption)
+        kwargs = {"caption": caption}
+        if "<tg-emoji" in caption:
+            kwargs["parse_mode"] = "HTML"
+        bot.send_document(admin_id, f, **kwargs)
 
 def backup_make_db_zip() -> str:
     """Создаёт zip с users.db/files.db (обычно маленький) и возвращает имя архива."""
@@ -3068,14 +3365,14 @@ def backup_databases_and_files_split():
         # 1) БД
         db_zip = backup_make_db_zip()
         created.append(db_zip)
-        send_file_to_admin(db_zip, caption="Backup DB ✅")
+        send_file_to_admin(db_zip, caption=f"Backup DB {CHECK_HTML}")
         log("backup: DB SENT")
 
         # 2) files/ (try single zip, else split)
         files_zip, added_files, size = backup_make_files_zip_single(MAX_PART_BYTES)
         if files_zip:
             created.append(files_zip)
-            caption = f"Backup files ✅\nSize: {size} bytes"
+            caption = f"Backup files {CHECK_HTML}\nSize: {size} bytes"
             send_file_to_admin(files_zip, caption=caption)
             log(f"backup: SENT {files_zip}")
         else:
@@ -3087,7 +3384,7 @@ def backup_databases_and_files_split():
                 log(f"backup: sending {total_parts} file parts, files_count={added_files}")
                 for i, part in enumerate(parts, 1):
                     size = os.path.getsize(part)
-                    caption = f"Backup files ✅ ({i}/{total_parts})\nSize: {size} bytes"
+                    caption = f"Backup files {CHECK_HTML} ({i}/{total_parts})\nSize: {size} bytes"
                     send_file_to_admin(part, caption=caption)
                     log(f"backup: SENT {part} ({i}/{total_parts})")
             else:
