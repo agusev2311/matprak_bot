@@ -158,6 +158,7 @@ def callback_action_name(callback_data: str) -> str:
         ("gpt_add_lesson_", "gpt_lesson.start"),
         ("attach_lesson_file_", "lesson.attach_prompt"),
         ("download_lesson_file_", "lesson.download"),
+        ("download_solution_file_", "solution.file_download"),
         ("toggle_task_", "task.toggle_status"),
         ("lesson_", "lesson.open"),
         ("task_", "task.open"),
@@ -183,6 +184,7 @@ def callback_action_name(callback_data: str) -> str:
         ("gptsql_accept_", "gpt_lesson.sql_accept"),
         ("gptsql_reject_", "gpt_lesson.sql_reject"),
         ("gptsql_retry_", "gpt_lesson.sql_retry"),
+        ("stats_", "vpn.stats"),
     )
     for prefix, action in action_map:
         if callback_data.startswith(prefix):
@@ -314,6 +316,255 @@ def send_saved_file_to_chat(chat_id: int, file_info, caption: str | None = None)
             if file_name:
                 send_kwargs["visible_file_name"] = file_name
             bot.send_document(chat_id, document, **send_kwargs)
+
+
+VERDICT_LABELS = {
+    "accept": "✅ Принято",
+    "reject": "❌ Отклонено",
+    "self_reject": "💔 Отменено автором",
+    None: "⌛️ Ожидает проверки",
+}
+
+VERDICT_ICONS = {
+    "accept": "✅",
+    "reject": "❌",
+    "self_reject": "💔",
+    None: "⌛️",
+}
+
+TASK_STATUS_LABELS = {
+    "open": "Открыта",
+    "close": "Закрыта",
+    "arc": "Закрыта",
+    "dev": "В разработке",
+}
+
+
+def shorten_text(value, max_len: int = 32) -> str:
+    text = " ".join(str(value or "").split())
+    if not text:
+        return "Без названия"
+    if len(text) <= max_len:
+        return text
+    return text[:max_len - 3] + "..."
+
+
+def truncate_block(value, max_len: int = 1200) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "Нет"
+    if len(text) <= max_len:
+        return text
+    return text[:max_len - 12].rstrip() + "\n... [обрезано]"
+
+
+def format_deadline(deadline_value) -> str:
+    if not deadline_value:
+        return "Не указан"
+    try:
+        deadline_date = datetime.datetime.fromtimestamp(float(deadline_value) / 1000.0)
+        return deadline_date.strftime('%d-%m-%Y %H:%M')
+    except Exception:
+        return str(deadline_value)
+
+
+def safe_delete_message(chat_id: int, message_id: int | None):
+    if not message_id:
+        return
+    try:
+        bot.delete_message(chat_id, message_id)
+    except Exception:
+        pass
+
+
+def build_main_menu_markup(user_id: int):
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("✏️ Отправить решение", callback_data='mm_send'))
+    markup.add(types.InlineKeyboardButton("🔍 Принять решение", callback_data='mm_check_0'))
+    markup.add(types.InlineKeyboardButton("📃 Все курсы", callback_data='mm_courses_0'))
+    markup.add(types.InlineKeyboardButton("🗂 Все решения", callback_data='mm_answers_0'))
+    if can_use_vpn_stats(user_id):
+        markup.add(types.InlineKeyboardButton("🌐 VPN статистика", callback_data='stats_GiB'))
+    if int(user_id) == get_admin_id():
+        markup.add(types.InlineKeyboardButton("🔑 Панель админа", callback_data="admin_panel_open"))
+    return markup
+
+
+def build_pagination_buttons(prefix: str, page: int, total_pages: int):
+    if total_pages <= 1:
+        return []
+
+    buttons = []
+    if page > 0:
+        buttons.append(types.InlineKeyboardButton("⏪", callback_data=f"{prefix}_0"))
+        buttons.append(types.InlineKeyboardButton("⬅️", callback_data=f"{prefix}_{page - 1}"))
+
+    buttons.append(types.InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data=f"{prefix}_{page}"))
+
+    if page < total_pages - 1:
+        buttons.append(types.InlineKeyboardButton("➡️", callback_data=f"{prefix}_{page + 1}"))
+        buttons.append(types.InlineKeyboardButton("⏩", callback_data=f"{prefix}_{total_pages - 1}"))
+
+    return buttons
+
+
+def get_solution_file_info(files_id):
+    if not files_id:
+        return None
+    raw_file_id = str(files_id).split()[0]
+    return sql_return.get_file(raw_file_id.split(".")[0])
+
+
+def solution_owner_name(solution_data: dict) -> str:
+    first_name = solution_data.get("student_first_name") or "Неизвестный"
+    last_name = solution_data.get("student_last_name") or "пользователь"
+    return f"{first_name} {last_name}".strip()
+
+
+def can_access_solution(user_id: int, solution_data: dict | None) -> bool:
+    if not solution_data:
+        return False
+    if int(user_id) == int(solution_data["student_id"]):
+        return True
+    return is_course_admin_or_dev(user_id, int(solution_data["course_id"]))
+
+
+def build_solution_list_button_text(solution_data: dict, viewer_id: int) -> str:
+    role_icon = "👨‍🎓" if int(solution_data["student_id"]) == int(viewer_id) else "👨‍🏫"
+    verdict_icon = VERDICT_ICONS.get(solution_data.get("verdict"), "⌛️")
+    file_icon = "📎" if solution_data.get("files_id") else ""
+
+    if int(solution_data["student_id"]) == int(viewer_id):
+        owner_part = ""
+    else:
+        owner_part = shorten_text(solution_owner_name(solution_data), 12) + " • "
+
+    body = (
+        f"{owner_part}"
+        f"{shorten_text(solution_data.get('course_name'), 14)} / "
+        f"{shorten_text(solution_data.get('lesson_title'), 14)} / "
+        f"#{solution_data.get('task_id')} {shorten_text(solution_data.get('task_title'), 12)}"
+    )
+    return shorten_text(f"{role_icon}{verdict_icon}{file_icon} {body}", 64)
+
+
+def build_solution_detail_text(solution_data: dict, comment_override: str | None = None) -> str:
+    comment = solution_data.get("comment") if comment_override is None else comment_override
+    file_info = get_solution_file_info(solution_data.get("files_id"))
+    file_name = file_info[3] if file_info else "Нет"
+    answer_text = truncate_block(solution_data.get("answer_text"), 1400)
+    task_text = truncate_block(solution_data.get("task_description"), 1400)
+
+    return (
+        f"<b>Решение #{solution_data['answer_id']}</b>\n"
+        f"<b>Вердикт:</b> {VERDICT_LABELS.get(solution_data.get('verdict'), 'Неизвестно')}\n"
+        f"<b>Отправил:</b> {html.escape(solution_owner_name(solution_data))}\n"
+        f"<b>Время отправки:</b> {html.escape(str(solution_data.get('submission_date') or 'Неизвестно'))}\n"
+        f"<b>Курс:</b> {html.escape(str(solution_data.get('course_name') or 'Неизвестно'))}\n"
+        f"<b>Урок:</b> {html.escape(str(solution_data.get('lesson_title') or 'Неизвестно'))}\n"
+        f"<b>Задача #{solution_data['task_id']}:</b> {html.escape(str(solution_data.get('task_title') or 'Без названия'))}\n"
+        f"<b>Статус задачи:</b> {html.escape(TASK_STATUS_LABELS.get(solution_data.get('task_status'), str(solution_data.get('task_status') or 'Неизвестно')))}\n"
+        f"<b>Дедлайн:</b> {html.escape(format_deadline(solution_data.get('task_deadline')))}\n"
+        f"<b>Файл решения:</b> {html.escape(str(file_name))}\n"
+        f"<b>Комментарий к вердикту:</b> {html.escape(str(comment if comment else 'Нет'))}\n\n"
+        f"<b>Текст задачи:</b>\n{html.escape(task_text)}\n\n"
+        f"<b>Текст решения:</b>\n{html.escape(answer_text)}"
+    )
+
+
+def show_solution_details(
+    call,
+    solution_data: dict,
+    reply_markup,
+    file_button_caption: str | None = None,
+    comment_override: str | None = None
+):
+    if not solution_data:
+        bot.send_message(call.message.chat.id, "Решение не найдено.")
+        return
+
+    safe_delete_message(call.message.chat.id, call.message.message_id)
+    bot.send_message(
+        call.message.chat.id,
+        build_solution_detail_text(solution_data, comment_override),
+        reply_markup=reply_markup,
+        parse_mode="HTML"
+    )
+
+
+def build_admin_panel_text(confirm_stop: bool = False) -> str:
+    status_counts = sql_return.get_user_status_counts()
+    lines = [
+        "Панель администратора",
+        "",
+        f"Непроверенных решений: {sql_return.count_unchecked_solutions_total()}",
+        f"Подтверждённых пользователей: {status_counts.get('approved', 0)}",
+        f"Заявок в ожидании: {status_counts.get('pending', 0)}",
+        f"Забаненных пользователей: {status_counts.get('banned', 0)}",
+    ]
+    if confirm_stop:
+        lines.extend([
+            "",
+            "Подтвердите остановку бота.",
+        ])
+    return "\n".join(lines)
+
+
+def build_admin_panel_markup(confirm_stop: bool = False):
+    markup = types.InlineKeyboardMarkup()
+    markup.row(
+        types.InlineKeyboardButton("🔒 Забанить", callback_data='admin_panel_ban'),
+        types.InlineKeyboardButton("🔓 Разбанить", callback_data='admin_panel_unban')
+    )
+    markup.add(types.InlineKeyboardButton("📦 Отправить бэкап", callback_data="admin_panel_backup"))
+    if confirm_stop:
+        markup.row(
+            types.InlineKeyboardButton("🛑 Подтвердить", callback_data='admin_panel_stop'),
+            types.InlineKeyboardButton("↩️ Отменить", callback_data='admin_panel_open')
+        )
+    else:
+        markup.add(types.InlineKeyboardButton("🛑 Остановить бота", callback_data="admin_panel_conf_stop"))
+    markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
+    return markup
+
+
+def parse_user_ids_text(text: str) -> tuple[list[int], list[str]]:
+    valid_ids = []
+    invalid_tokens = []
+    for token in re.split(r"[\s,;]+", text.strip()):
+        if not token:
+            continue
+        try:
+            valid_ids.append(int(token))
+        except ValueError:
+            invalid_tokens.append(token)
+    return valid_ids, invalid_tokens
+
+
+def build_solution_view_markup(solution_data: dict, viewer_id: int, page: int = 0):
+    markup = types.InlineKeyboardMarkup()
+    if solution_data.get("files_id"):
+        markup.add(types.InlineKeyboardButton("📎 Открыть файл решения", callback_data=f"download_solution_file_{solution_data['answer_id']}"))
+    if int(solution_data["student_id"]) == int(viewer_id) and solution_data["verdict"] is None:
+        markup.add(types.InlineKeyboardButton("💔 Отменить", callback_data=f"self_reject_{solution_data['answer_id']}_{page}"))
+    if int(solution_data["student_id"]) == int(viewer_id) and solution_data["verdict"] == "self_reject":
+        markup.add(types.InlineKeyboardButton("❤️‍🩹 Восстановить", callback_data=f"undo_self_reject_{solution_data['answer_id']}_{page}"))
+    markup.add(types.InlineKeyboardButton("🗂 Все решения", callback_data=f"mm_answers_{page}"))
+    return markup
+
+
+def build_check_solution_markup(solution_data: dict, check_type: str):
+    answer_id = solution_data["answer_id"]
+    markup = types.InlineKeyboardMarkup()
+    markup.row(
+        types.InlineKeyboardButton("✅ Принять", callback_data=f"check-final_accept_{answer_id}"),
+        types.InlineKeyboardButton("❌ Отклонить", callback_data=f"check-final_reject_{answer_id}")
+    )
+    markup.add(types.InlineKeyboardButton("✍️ Добавить комментарий", callback_data=f"check-add-comment_{check_type}_{answer_id}"))
+    if solution_data.get("files_id"):
+        markup.add(types.InlineKeyboardButton("📎 Открыть файл решения", callback_data=f"download_solution_file_{answer_id}"))
+    markup.add(types.InlineKeyboardButton("⬅️ К проверке", callback_data="mm_check_0"))
+    return markup
 
 
 def get_notifiable_student_ids(course_id: int) -> list[int]:
@@ -921,19 +1172,11 @@ def start(message):
     if user and user[3] == "pending":
         bot.reply_to(message, "Вы уже подали заявку, ожидайте ответа администратора.")
     elif user and user[3] == "approved":
-        markup = types.InlineKeyboardMarkup()
-        button1 = types.InlineKeyboardButton("✏️ Отправить решение", callback_data=f'mm_send')
-        button2 = types.InlineKeyboardButton("🔍 Принять решение", callback_data=f'mm_check_0')
-        button3 = types.InlineKeyboardButton("📃 Все курсы", callback_data=f'mm_courses_0')
-        button4 = types.InlineKeyboardButton("🗂 Все решения", callback_data=f"mm_answers_0")
-        button5 = types.InlineKeyboardButton("🔑 Панель админа", callback_data="admin_panel_open")
-        markup.add(button1)
-        markup.add(button2)
-        markup.add(button3)
-        markup.add(button4)
-        if message.from_user.id == config["admin_id"]:
-            markup.add(button5)
-        bot.reply_to(message, f"""Здравствуйте, {message.from_user.first_name}!""", reply_markup=markup)
+        bot.reply_to(
+            message,
+            f"""Здравствуйте, {message.from_user.first_name}!""",
+            reply_markup=build_main_menu_markup(message.from_user.id)
+        )
     elif user and user[3] == "banned":
         bot.reply_to(message, "Вы были забанены. Обратитесь к администратору")
     else:
@@ -1006,19 +1249,12 @@ def handle_query(call):
         if user and user[3] == "pending":
             bot.edit_message_text("Вы уже подали заявку, ожидайте ответа администратора.", chat_id=call.message.chat.id, message_id=call.message.message_id)
         elif user and user[3] == "approved":
-            markup = types.InlineKeyboardMarkup()
-            button1 = types.InlineKeyboardButton("✏️ Отправить решение", callback_data=f'mm_send')
-            button2 = types.InlineKeyboardButton("🔍 Принять решение", callback_data=f'mm_check_0')
-            button3 = types.InlineKeyboardButton("📃 Все курсы", callback_data=f'mm_courses_0')
-            button4 = types.InlineKeyboardButton("🗂 Все решения", callback_data=f"mm_answers_0")
-            button5 = types.InlineKeyboardButton("🔑 Панель админа", callback_data="admin_panel_open")
-            markup.add(button1)
-            markup.add(button2)
-            markup.add(button3)
-            markup.add(button4)
-            if call.from_user.id == config["admin_id"]:
-                markup.add(button5)
-            bot.edit_message_text(f"""Здравствуйте, {call.from_user.first_name}!""", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+            bot.edit_message_text(
+                f"""Здравствуйте, {call.from_user.first_name}!""",
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=build_main_menu_markup(call.from_user.id)
+            )
         elif user and user[3] == "banned":
             bot.edit_message_text("Вы были забанены. Обратитесь к администратору", chat_id=call.message.chat.id, message_id=call.message.message_id)
         else:
@@ -1046,6 +1282,8 @@ def handle_query(call):
             int(call.data.split('_')[-2]),
             int(call.data.split('_')[-1]),
         )
+    elif call.data.startswith("download_solution_file_"):
+        download_solution_file(call, int(call.data.split('_')[-1]))
     elif call.data.startswith("toggle_task_"):
         toggle_task_open_close(
             call,
@@ -1082,11 +1320,20 @@ def handle_query(call):
     elif call.data.startswith("create_task"):
         create_task(call)
     elif call.data.startswith("solution"):
-        solution(call, int(call.data.split("_")[-1]))
+        parts = call.data.split("_")
+        answer_id = int(parts[1]) if len(parts) > 2 else int(parts[-1])
+        page = int(parts[2]) if len(parts) > 2 else 0
+        solution(call, answer_id, page)
     elif call.data.startswith("self_reject"):
-        self_reject(call, int(call.data.split("_")[-1]))
+        parts = call.data.split("_")
+        answer_id = int(parts[2]) if len(parts) > 3 else int(parts[-1])
+        page = int(parts[3]) if len(parts) > 3 else 0
+        self_reject(call, answer_id, page)
     elif call.data.startswith("undo_self_reject"):
-        self_reject(call, int(call.data.split("_")[-1]), True)
+        parts = call.data.split("_")
+        answer_id = int(parts[3]) if len(parts) > 4 else int(parts[-1])
+        page = int(parts[4]) if len(parts) > 4 else 0
+        self_reject(call, answer_id, page, True)
     elif call.data.startswith("admin_panel_open"):
         admin_panel(call)
     elif call.data.startswith("admin_panel_backup"):
@@ -1416,80 +1663,64 @@ def mm_check(call, page=0):
     bot.send_message(call.message.chat.id, f"Выберите курс для принятия задания\nСтраница {page + 1} из {total_pages}:", reply_markup=markup)
 
 def mm_answers(call, page=0):
-    solutions = sql_return.get_accessible_solutions(user_id=call.from_user.id)
-    solutions = list(reversed(solutions))
+    is_admin = int(call.from_user.id) == get_admin_id()
+    solutions = sql_return.get_accessible_solution_details(call.from_user.id, include_all=is_admin)
 
-    courses_per_page = 8
-    total_pages = (len(solutions) + courses_per_page - 1) // courses_per_page
-    page_courses = solutions[page * courses_per_page:(page + 1) * courses_per_page]
+    if not solutions:
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
+        safe_delete_message(call.message.chat.id, call.message.message_id)
+        bot.send_message(call.message.chat.id, "У вас пока нет доступных решений.", reply_markup=markup)
+        return
+
+    solutions_per_page = 6
+    total_pages = max(1, (len(solutions) + solutions_per_page - 1) // solutions_per_page)
+    page = max(0, min(page, total_pages - 1))
+    page_solutions = solutions[page * solutions_per_page:(page + 1) * solutions_per_page]
 
     markup = types.InlineKeyboardMarkup()
+    for solution_data in page_solutions:
+        button_text = build_solution_list_button_text(solution_data, call.from_user.id)
+        markup.add(
+            types.InlineKeyboardButton(
+                button_text,
+                callback_data=f"solution_{solution_data['answer_id']}_{page}"
+            )
+        )
 
-    for solution in page_courses:
-        if solution[2] != call.from_user.id:
-            if solution[6] == "accept":
-                markup.add(types.InlineKeyboardButton(f"👨‍🏫✅ {solution[0]}", callback_data=f'solution_{solution[0]}'))
-            elif solution[6] == "reject":
-                markup.add(types.InlineKeyboardButton(f"👨‍🏫❌ {solution[0]}", callback_data=f'solution_{solution[0]}'))
-            elif solution[6] == "self_reject":
-                markup.add(types.InlineKeyboardButton(f"👨‍🏫💔 {solution[0]}", callback_data=f'solution_{solution[0]}'))
-            else:
-                markup.add(types.InlineKeyboardButton(f"👨‍🏫⌛️ {solution[0]}", callback_data=f'solution_{solution[0]}'))
-        elif solution[2] == call.from_user.id:
-            if solution[6] == "accept":
-                markup.add(types.InlineKeyboardButton(f"👨‍🎓✅ {solution[0]}", callback_data=f'solution_{solution[0]}'))
-            elif solution[6] == "reject":
-                markup.add(types.InlineKeyboardButton(f"👨‍🎓❌ {solution[0]}", callback_data=f'solution_{solution[0]}'))
-            elif solution[6] == "self_reject":
-                markup.add(types.InlineKeyboardButton(f"👨‍🎓💔 {solution[0]}", callback_data=f'solution_{solution[0]}'))
-            else:
-                markup.add(types.InlineKeyboardButton(f"👨‍🎓⌛️ {solution[0]}", callback_data=f'solution_{solution[0]}'))
-        else:
-            markup.add(types.InlineKeyboardButton(f"{solution[1]} {solution[0]}", callback_data=f'solution_{solution[0]}'))
-
-    navigation = []
-    if page > 0:
-        navigation.append(types.InlineKeyboardButton("⬅️ Назад", callback_data=f'mm_answers_{page - 1}'))
-    if page < total_pages - 1:
-        navigation.append(types.InlineKeyboardButton("➡️ Вперед", callback_data=f'mm_answers_{page + 1}'))
-
-    markup.row(*navigation)
+    pagination = build_pagination_buttons("mm_answers", page, total_pages)
+    if pagination:
+        markup.row(*pagination)
     markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
-    bot.delete_message(call.message.chat.id, call.message.message_id)
-    
-    bot.send_message(call.message.chat.id, f"Выберите решение для просмотра\nСтраница {page + 1} из {total_pages}:", reply_markup=markup)
 
-def solution(call, sol_id):
-    sol = sql_return.get_student_answer_from_id(sol_id)
-    print(sol)
-    verdicts = {"accept": "✅ Принято", "reject": "❌ Отклонено", "self_reject": "💔 Отменено создателем", None: "⌛️ Ожидает проверки"}
-    markup = types.InlineKeyboardMarkup()
-    if sol[2] == call.from_user.id and sol[6] == None:
-        markup.add(types.InlineKeyboardButton("💔 Отменить", callback_data=f"self_reject_{sol[0]}"))
-    if sol[2] == call.from_user.id and sol[6] == "self_reject":
-        markup.add(types.InlineKeyboardButton("❤️‍🩹 Восстановить", callback_data=f"undo_self_reject_{sol[0]}"))
-    markup.add(types.InlineKeyboardButton("🗂 Все решения", callback_data="mm_answers_0"))
-    student_name = sql_return.get_user_name(sol[2])
-    text = f"""Решение:
-Вердикт: {verdicts[sol[6]]}
-Отправил {student_name[0]} {student_name[1]}
-Время отправки: {sol[5]}
+    text = (
+        "Выберите решение для просмотра.\n"
+        "Формат кнопки: роль, вердикт, наличие файла, затем курс / урок / номер задачи.\n"
+        f"Страница {page + 1} из {total_pages}. Всего решений: {len(solutions)}."
+    )
 
-(тут есть не вся информация, так как функция тестируется)
-
-Текст решения:
-{sol[3]}
-"""
-    bot.delete_message(call.message.chat.id, call.message.message_id)
-    
+    safe_delete_message(call.message.chat.id, call.message.message_id)
     bot.send_message(call.message.chat.id, text, reply_markup=markup)
 
-def self_reject(call, sol_id, undo=False):
+def solution(call, sol_id, page=0):
+    solution_data = sql_return.get_solution_details(sol_id)
+    if not can_access_solution(call.from_user.id, solution_data):
+        bot.send_message(call.message.chat.id, "У вас нет доступа к этому решению.")
+        return
+
+    markup = build_solution_view_markup(solution_data, call.from_user.id, page)
+    show_solution_details(call, solution_data, markup, file_button_caption=f"Файл решения #{sol_id}")
+
+def self_reject(call, sol_id, page=0, undo=False):
+    solution_data = sql_return.get_solution_details(sol_id)
+    if not solution_data or int(solution_data["student_id"]) != int(call.from_user.id):
+        bot.send_message(call.message.chat.id, "Вы можете менять только свои решения.")
+        return
     if undo:
         sql_return.undo_self_reject(sol_id)
     else:
         sql_return.self_reject(sol_id)
-    solution(call, sol_id)
+    solution(call, sol_id, page)
 
 def check_all(call):
     task_data = sql_return.last_student_answer_all(call.from_user.id)
@@ -1502,139 +1733,36 @@ def check_course(call, course_id):
 comment_for_answer_dict = dict([])
 
 def check_task(type: str, call, task_data, comment: str = "None"):
-    markup = types.InlineKeyboardMarkup()
     if task_data is None:
+        markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="mm_check_0"))
-        bot.edit_message_text(
+        safe_delete_message(call.message.chat.id, call.message.message_id)
+        bot.send_message(
+            call.message.chat.id,
             "У вас нет непроверенных решений в этом разделе",
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
             reply_markup=markup
         )
         return
 
-    # Create common buttons
-    v = [
-        types.InlineKeyboardButton("✅ Принять", callback_data=f"check-final_accept_{task_data['answer_id'] if isinstance(task_data, dict) else task_data[0]}"),
-        types.InlineKeyboardButton("❌ Отклонить", callback_data=f"check-final_reject_{task_data['answer_id'] if isinstance(task_data, dict) else task_data[0]}")
-    ]
-    markup.row(*v)
-
     if isinstance(task_data, dict):
-        # Handle dictionary case
-        markup.add(types.InlineKeyboardButton("✍️ Добавить комментарий", 
-                  callback_data=f"check-add-comment_{type}_{task_data['answer_id']}"))
-        
-        task_data_2 = sql_return.get_task_from_id(task_data["task_id"])
-        lesson_data = sql_return.get_lesson_from_id(task_data_2[1])
-        files_id = task_data["files_id"]
-        answer_text = task_data['answer_text']
-        student_name = sql_return.get_user_name(task_data['student_id'])
+        answer_id = task_data["answer_id"]
     else:
-        markup.add(types.InlineKeyboardButton("✍️ Добавить комментарий", 
-                  callback_data=f"check-add-comment_{type}_{task_data[0]}"))
-        task_data_2 = sql_return.get_task_from_id(task_data[1])
-        lesson_data = sql_return.get_lesson_from_id(task_data_2[1])
-        files_id = task_data[4] if len(task_data) > 4 else None  # Assuming files_id is at index 4
-        answer_text = task_data[3]
-        student_name = sql_return.get_user_name(task_data[2])
-    try:
-        # Construct message text
-        text = f"""<b>Решение</b>:
-    <b>Отправил</b> {student_name[0]} {student_name[1]}
-    <b>Урок</b>: {lesson_data[2]}
-    <b>Задача</b>: {task_data_2[2]}
-    <b>Решение</b>:
-    {answer_text}
-    <b>Комментарий к вердикту</b>: {comment}"""
-        if files_id is None:
-            bot.edit_message_text(
-                text,
-                chat_id=call.message.chat.id,
-                message_id=call.message.message_id,
-                reply_markup=markup,
-                parse_mode="HTML"
-            )
-        else:
-            # Delete old message
-            bot.delete_message(
-                chat_id=call.message.chat.id,
-                message_id=call.message.message_id
-            )
-            
-            # Send message with file
-            file_id = files_id.split()[0]
-            file_info = sql_return.get_file(file_id.split(".")[0])
-            file_type = file_info[2]
-            file_name = file_info[3]
-            file_path = file_info[4]
-            
-            if file_type == 'photo':
-                with open(file_path, 'rb') as photo:
-                    bot.send_photo(
-                        call.message.chat.id,
-                        photo,
-                        caption=text,
-                        reply_markup=markup,
-                        parse_mode="HTML"
-                    )
-            else:
-                with open(file_path, 'rb') as doc:
-                    bot.send_document(
-                        call.message.chat.id,
-                        doc,
-                        visible_file_name=file_name,
-                        caption=text,
-                        reply_markup=markup,
-                        parse_mode="HTML"
-                    )
-    except:
-        # Construct message text
-        text = f"""Решение:
-    Отправил {student_name[0]} {student_name[1]}
-    Урок>: {lesson_data[2]}
-    Задача>: {task_data_2[2]}
-    Решение:
-    {answer_text}
-    Комментарий к вердикту: {comment}"""
-        if files_id is None:
-            bot.edit_message_text(
-                text,
-                chat_id=call.message.chat.id,
-                message_id=call.message.message_id,
-                reply_markup=markup
-            )
-        else:
-            # Delete old message
-            bot.delete_message(
-                chat_id=call.message.chat.id,
-                message_id=call.message.message_id
-            )
-            
-            # Send message with file
-            file_id = files_id.split()[0]
-            file_info = sql_return.get_file(file_id.split(".")[0])
-            file_type = file_info[2]
-            file_name = file_info[3]
-            file_path = file_info[4]
-            
-            if file_type == 'photo':
-                with open(file_path, 'rb') as photo:
-                    bot.send_photo(
-                        call.message.chat.id,
-                        photo,
-                        caption=text,
-                        reply_markup=markup
-                    )
-            else:
-                with open(file_path, 'rb') as doc:
-                    bot.send_document(
-                        call.message.chat.id,
-                        doc,
-                        visible_file_name=file_name,
-                        caption=text,
-                        reply_markup=markup
-                    )
+        answer_id = task_data[0]
+
+    solution_data = sql_return.get_solution_details(answer_id)
+    if not solution_data:
+        bot.send_message(call.message.chat.id, "Решение не найдено.")
+        return
+
+    markup = build_check_solution_markup(solution_data, type)
+    comment_to_show = None if comment == "None" else comment
+    show_solution_details(
+        call,
+        solution_data,
+        markup,
+        file_button_caption=f"Файл решения #{answer_id}",
+        comment_override=comment_to_show
+    )
 
 def check_add_comment(message, call, type: str, task_id):
     log_user_action(
@@ -2263,6 +2391,30 @@ def download_lesson_file(call, course_id: int, lesson_id: int):
     except Exception:
         bot.send_message(call.message.chat.id, "Не удалось отправить файл. Попробуйте позже.")
 
+
+def download_solution_file(call, answer_id: int):
+    solution_data = sql_return.get_solution_details(answer_id)
+    if not can_access_solution(call.from_user.id, solution_data):
+        bot.send_message(call.message.chat.id, "У вас нет доступа к файлу этого решения.")
+        return
+
+    file_info = get_solution_file_info(solution_data.get("files_id"))
+    if not file_info:
+        bot.send_message(call.message.chat.id, "К этому решению не прикреплён файл.")
+        return
+
+    try:
+        send_saved_file_to_chat(
+            call.message.chat.id,
+            file_info,
+            caption=f"Файл решения #{answer_id}"
+        )
+        sql_return.log_action(call.from_user.id, "download_solution_file", f"{answer_id}")
+    except FileNotFoundError:
+        bot.send_message(call.message.chat.id, "Файл найден в базе, но отсутствует на диске.")
+    except Exception:
+        bot.send_message(call.message.chat.id, "Не удалось отправить файл решения. Попробуйте позже.")
+
 def create_task(call):
     bot.edit_message_text(f"""🎓 Вы создаёте задачу.
                           
@@ -2424,12 +2576,13 @@ def get_vpn_stats_keyboard():
         types.InlineKeyboardButton("GiB", callback_data="stats_GiB"),
         types.InlineKeyboardButton("TiB", callback_data="stats_TiB"),
     )
+    kb.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
     return kb
 
 
 @bot.message_handler(commands=["vpnstats"])
 def vpn_stats(message):
-    if not can_use_vpn_stats(message.chat.id):
+    if not can_use_vpn_stats(message.from_user.id):
         bot.send_message(message.chat.id, "no access")
         return
 
@@ -2438,59 +2591,124 @@ def vpn_stats(message):
 
 
 def ban(call):
-    if call.from_user.id != config["admin_id"]:
+    if call.from_user.id != get_admin_id():
         return
-    bot.send_message(call.chat.id, "Введите id пользователей")
-    bot.register_next_step_handler(call, ban_enter)
-
-def ban_enter(call):
-    log_user_action(
-        call.from_user,
-        "admin.ban_input",
-        f"target_ids={call.message.text or ''}"
+    prompt = bot.send_message(
+        call.message.chat.id,
+        "Введите ID пользователей для бана через пробел, запятую или новую строку.\nДля отмены отправьте /cancel."
     )
-    for user in call.message.text.split():
-        sql_return.set_user_status(user, "banned")
-    sql_return.log_action(call.from_user.id, "ban", f"{call.message.text.split()}")
-    bot.send_message(call.message.chat.id, "Пользователи забанены")
+    bot.register_next_step_handler(prompt, ban_enter)
+
+def ban_enter(message):
+    if message.from_user.id != get_admin_id():
+        return
+    log_user_action(
+        message.from_user,
+        "admin.ban_input",
+        f"target_ids={message.text or ''}"
+    )
+    text = (message.text or "").strip()
+    if text.lower() in {"/cancel", "cancel"}:
+        bot.send_message(message.chat.id, "Бан отменён.", reply_markup=build_admin_panel_markup())
+        return
+
+    user_ids, invalid_tokens = parse_user_ids_text(text)
+    updated = []
+    missing = []
+    skipped = []
+    for user_id in user_ids:
+        if user_id == get_admin_id():
+            skipped.append(str(user_id))
+            continue
+        if not sql_return.find_user_id(user_id):
+            missing.append(str(user_id))
+            continue
+        sql_return.set_user_status(user_id, "banned")
+        updated.append(str(user_id))
+
+    sql_return.log_action(message.from_user.id, "ban", f"updated={updated} missing={missing} invalid={invalid_tokens} skipped={skipped}")
+
+    summary = [
+        "Результат бана:",
+        f"Забанено: {', '.join(updated) if updated else 'никого'}",
+    ]
+    if missing:
+        summary.append(f"Не найдены: {', '.join(missing)}")
+    if invalid_tokens:
+        summary.append(f"Некорректный ввод: {', '.join(invalid_tokens)}")
+    if skipped:
+        summary.append(f"Пропущены: {', '.join(skipped)}")
+
+    bot.send_message(message.chat.id, "\n".join(summary), reply_markup=build_admin_panel_markup())
 
 def unban(call):
-    if call.from_user.id != config["admin_id"]:
+    if call.from_user.id != get_admin_id():
         return
-    bot.send_message(call.chat.id, "Введите id пользователей")
-    bot.register_next_step_handler(call, unban_enter)
-
-def unban_enter(call):
-    log_user_action(
-        call.from_user,
-        "admin.unban_input",
-        f"target_ids={call.message.text or ''}"
+    prompt = bot.send_message(
+        call.message.chat.id,
+        "Введите ID пользователей для разбана через пробел, запятую или новую строку.\nДля отмены отправьте /cancel."
     )
-    for user in call.message.text.split():
-        sql_return.set_user_status(user, "approved")
-    sql_return.log_action(call.from_user.id, "unban", f"{call.message.text.split()}")
-    bot.send_message(call.message.chat.id, "Пользователи разбанены")
+    bot.register_next_step_handler(prompt, unban_enter)
+
+def unban_enter(message):
+    if message.from_user.id != get_admin_id():
+        return
+    log_user_action(
+        message.from_user,
+        "admin.unban_input",
+        f"target_ids={message.text or ''}"
+    )
+    text = (message.text or "").strip()
+    if text.lower() in {"/cancel", "cancel"}:
+        bot.send_message(message.chat.id, "Разбан отменён.", reply_markup=build_admin_panel_markup())
+        return
+
+    user_ids, invalid_tokens = parse_user_ids_text(text)
+    updated = []
+    missing = []
+    for user_id in user_ids:
+        if not sql_return.find_user_id(user_id):
+            missing.append(str(user_id))
+            continue
+        sql_return.set_user_status(user_id, "approved")
+        updated.append(str(user_id))
+
+    sql_return.log_action(message.from_user.id, "unban", f"updated={updated} missing={missing} invalid={invalid_tokens}")
+
+    summary = [
+        "Результат разбана:",
+        f"Разбанено: {', '.join(updated) if updated else 'никого'}",
+    ]
+    if missing:
+        summary.append(f"Не найдены: {', '.join(missing)}")
+    if invalid_tokens:
+        summary.append(f"Некорректный ввод: {', '.join(invalid_tokens)}")
+
+    bot.send_message(message.chat.id, "\n".join(summary), reply_markup=build_admin_panel_markup())
 
 def stop_confirm(call):
-    markup = types.InlineKeyboardMarkup()
-    wtf_markup = types.InlineKeyboardMarkup()
-
-    markup.row(types.InlineKeyboardButton("🔒 Заблокировать", callback_data=f'admin_panel_ban'), types.InlineKeyboardButton("🔓 Разблокировать", callback_data=f'admin_panel_unban'))
-    # markup.add(types.InlineKeyboardButton("🛑 Остановить бота", callback_data="admin_panel_stop"))
-    markup.row(types.InlineKeyboardButton("🛑 Я уверен", callback_data=f'admin_panel_stop'), types.InlineKeyboardButton("🫢 Отменить", callback_data=f'admin_panel_open'))
-    markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
-    wtf_markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
-
-    if call.from_user.id == config["admin_id"]:
-        bot.edit_message_text(f"""Здравствуйте, админ (омг я же сам админ, точно)""", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+    if call.from_user.id == get_admin_id():
+        bot.edit_message_text(
+            build_admin_panel_text(confirm_stop=True),
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=build_admin_panel_markup(confirm_stop=True)
+        )
     else:
-        bot.edit_message_text(f"""Подожди, подожди, подожди. Как ты это сделал?!?!?!""", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=wtf_markup)
-        bot.send_message(config["admin_id"], f"❗️❗️СРОЧНО❗️❗️\n\nПользователь {call.from_user.id} ({sql_return.get_user_name(call.from_user.id)}) попытался попасть в панель админа")
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
+        bot.edit_message_text(
+            "У вас нет доступа к панели администратора.",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=markup
+        )
+        bot.send_message(config["admin_id"], f"Пользователь {call.from_user.id} попытался открыть подтверждение остановки.")
 
 def stop(call):
     global is_polling
    
-    if call.from_user.id == config["admin_id"]:
+    if call.from_user.id == get_admin_id():
         bot.send_message(call.message.chat.id, "Подождите...")
         broadcast("❌ Бот временно закрыт на технические работы.")
         is_polling = False
@@ -2505,20 +2723,23 @@ def broadcast(message: str):
             pass
 
 def admin_panel(call):
-    markup = types.InlineKeyboardMarkup()
-    wtf_markup = types.InlineKeyboardMarkup()
-
-    # markup.row(types.InlineKeyboardButton("🔒 Заблокировать", callback_data=f'admin_panel_ban'), types.InlineKeyboardButton("🔓 Разблокировать", callback_data=f'admin_panel_unban'))
-    markup.add(types.InlineKeyboardButton("📦 Отправить бэкап", callback_data="admin_panel_backup"))
-    markup.add(types.InlineKeyboardButton("🛑 Остановить бота", callback_data="admin_panel_conf_stop"))
-    markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
-    wtf_markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
-
-    if call.from_user.id == config["admin_id"]:
-        bot.edit_message_text(f"""Несданные задачи по матпраку: {sql_return.count_unchecked_solutions(6)}""", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+    if call.from_user.id == get_admin_id():
+        bot.edit_message_text(
+            build_admin_panel_text(),
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=build_admin_panel_markup()
+        )
     else:
-        bot.edit_message_text(f"""Подожди, подожди, подожди. Как ты это сделал?!?!?!""", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=wtf_markup)
-        bot.send_message(config["admin_id"], f"❗️❗️СРОЧНО❗️❗️\n\nПользователь {call.from_user.id} ({sql_return.get_user_name(call.from_user.id)}) попытался попасть в панель админа")
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="mm_main_menu"))
+        bot.edit_message_text(
+            "У вас нет доступа к панели администратора.",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=markup
+        )
+        bot.send_message(config["admin_id"], f"Пользователь {call.from_user.id} попытался открыть панель администратора.")
 
 def admin_backup(call):
     if call.from_user.id != config["admin_id"]:

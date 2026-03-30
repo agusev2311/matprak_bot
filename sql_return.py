@@ -535,6 +535,22 @@ def count_unchecked_solutions(course_id: int) -> int:
 
     return count
 
+def count_unchecked_solutions_total() -> int:
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM student_answers WHERE verdict IS NULL")
+        result = cursor.fetchone()
+        return result[0] if result else 0
+
+def get_user_status_counts() -> dict[str, int]:
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT status, COUNT(*) FROM users GROUP BY status")
+        counts = {"approved": 0, "pending": 0, "banned": 0}
+        for status, count in cursor.fetchall():
+            counts[status] = count
+        return counts
+
 import sqlite3
 
 def get_accessible_solutions(user_id):
@@ -579,6 +595,100 @@ def get_accessible_solutions(user_id):
     
     conn.close()
     return solutions
+
+def get_accessible_solution_details(user_id: int, include_all: bool = False) -> list[dict]:
+    with sqlite3.connect(config["db-name"], check_same_thread=False) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        base_query = '''
+            SELECT
+                sa.id AS answer_id,
+                sa.task_id AS task_id,
+                sa.student_id AS student_id,
+                sa.answer_text AS answer_text,
+                sa.files_id AS files_id,
+                sa.submission_date AS submission_date,
+                sa.verdict AS verdict,
+                sa.comment AS comment,
+                t.title AS task_title,
+                t.description AS task_description,
+                t.status AS task_status,
+                t.deadline AS task_deadline,
+                l.id AS lesson_id,
+                l.title AS lesson_title,
+                c.course_id AS course_id,
+                c.course_name AS course_name,
+                u.first_name AS student_first_name,
+                u.last_name AS student_last_name
+            FROM student_answers sa
+            JOIN tasks t ON sa.task_id = t.id
+            JOIN lessons l ON t.lesson_id = l.id
+            JOIN courses c ON l.course_id = c.course_id
+            LEFT JOIN users u ON sa.student_id = u.user_id
+        '''
+
+        if include_all:
+            cursor.execute(base_query + " ORDER BY sa.id DESC")
+            return [dict(row) for row in cursor.fetchall()]
+
+        cursor.execute("""
+            SELECT course_id FROM courses
+            WHERE (' ' || COALESCE(developers, '') || ' ') LIKE ?
+        """, (f"% {user_id} %",))
+        course_ids = [row[0] for row in cursor.fetchall()]
+
+        if course_ids:
+            placeholders = ",".join("?" * len(course_ids))
+            query = base_query + f"""
+                WHERE sa.student_id = ?
+                OR l.course_id IN ({placeholders})
+                ORDER BY sa.id DESC
+            """
+            params = [user_id, *course_ids]
+        else:
+            query = base_query + """
+                WHERE sa.student_id = ?
+                ORDER BY sa.id DESC
+            """
+            params = [user_id]
+
+        cursor.execute(query, params)
+        return [dict(row) for row in cursor.fetchall()]
+
+def get_solution_details(answer_id: int) -> Optional[dict]:
+    with sqlite3.connect(config["db-name"], check_same_thread=False) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT
+                sa.id AS answer_id,
+                sa.task_id AS task_id,
+                sa.student_id AS student_id,
+                sa.answer_text AS answer_text,
+                sa.files_id AS files_id,
+                sa.submission_date AS submission_date,
+                sa.verdict AS verdict,
+                sa.comment AS comment,
+                t.title AS task_title,
+                t.description AS task_description,
+                t.status AS task_status,
+                t.deadline AS task_deadline,
+                l.id AS lesson_id,
+                l.title AS lesson_title,
+                c.course_id AS course_id,
+                c.course_name AS course_name,
+                u.first_name AS student_first_name,
+                u.last_name AS student_last_name
+            FROM student_answers sa
+            JOIN tasks t ON sa.task_id = t.id
+            JOIN lessons l ON t.lesson_id = l.id
+            JOIN courses c ON l.course_id = c.course_id
+            LEFT JOIN users u ON sa.student_id = u.user_id
+            WHERE sa.id = ?
+        ''', (answer_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
 
 def self_reject(sol_id: int):
     conn = sqlite3.connect(config["db-name"])
