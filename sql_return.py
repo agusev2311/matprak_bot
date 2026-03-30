@@ -7,6 +7,12 @@ from typing import Optional
 with open('config.json', 'r') as file:
     config = json.load(file)
 
+def ensure_column(cursor, table_name: str, column_name: str, column_definition: str):
+    cursor.execute(f"PRAGMA table_info({table_name})")
+    columns = [row[1] for row in cursor.fetchall()]
+    if column_name not in columns:
+        cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_definition}")
+
 def init_db():
     conn = sqlite3.connect(config["db-name"], check_same_thread=False)
     cursor = conn.cursor()
@@ -26,9 +32,11 @@ def init_db():
             title TEXT NOT NULL,
             status TEXT NOT NULL,
             open_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            file_id TEXT,
             FOREIGN KEY(course_id) REFERENCES courses(id)
         )
     ''')
+    ensure_column(cursor, "lessons", "file_id", "file_id TEXT")
 
     # Status:
     # open
@@ -355,6 +363,12 @@ def get_lesson_from_id(lesson_id):
         cursor.execute("SELECT * FROM lessons WHERE id=?", (lesson_id,))
         return cursor.fetchone()
 
+def set_lesson_file(lesson_id: int, file_id: str | None):
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE lessons SET file_id=? WHERE id=?", (file_id, lesson_id))
+        conn.commit()
+
 def get_student_answer_from_id(sa_id):
     with sqlite3.connect(config["db-name"]) as conn:
         cursor = conn.cursor()
@@ -367,10 +381,13 @@ def check_student_answer(verdict: str, comment: str | None, student_answer_id: i
         cursor.execute("UPDATE student_answers SET verdict=? WHERE id=?", (verdict, student_answer_id))
         cursor.execute("UPDATE student_answers SET comment=? WHERE id=?", (comment, student_answer_id))
 
-def create_lesson(course_id: int, name: str):
+def create_lesson(course_id: int, name: str, file_id: str | None = None):
     with sqlite3.connect(config["db-name"]) as conn:
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO lessons (course_id, title, status) VALUES (?, ?, ?)", (course_id, name, "open"))
+        cursor.execute(
+            "INSERT INTO lessons (course_id, title, status, file_id) VALUES (?, ?, ?, ?)",
+            (course_id, name, "open", file_id)
+        )
         conn.commit()
 
 def create_task(lesson_id: int, course_id: int, name: str, description: str):

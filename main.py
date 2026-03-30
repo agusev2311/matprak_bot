@@ -75,6 +75,28 @@ def get_course_title(course_id: int) -> str:
     return str(course[1])
 
 
+def is_course_admin_or_dev(user_id: int, course_id: int) -> bool:
+    course = sql_return.find_course_id(course_id)
+    if not course:
+        return False
+    developer_ids = (course[4] or "").split()
+    return (
+        int(user_id) == get_admin_id()
+        or str(user_id) == str(course[2])
+        or str(user_id) in developer_ids
+    )
+
+
+def can_access_course_materials(user_id: int, course_id: int) -> bool:
+    course = sql_return.find_course_id(course_id)
+    if not course:
+        return False
+    if is_course_admin_or_dev(user_id, course_id):
+        return True
+    student_ids = (course[3] or "").split()
+    return str(user_id) in student_ids
+
+
 def normalize_user_action_text(value, max_len: int = 240) -> str:
     text = " ".join(str(value).split())
     if len(text) > max_len:
@@ -128,6 +150,8 @@ def callback_action_name(callback_data: str) -> str:
         ("add_developer_", "course.add_developer_prompt"),
         ("content_", "course.content"),
         ("gpt_add_lesson_", "gpt_lesson.start"),
+        ("attach_lesson_file_", "lesson.attach_prompt"),
+        ("download_lesson_file_", "lesson.download"),
         ("toggle_task_", "task.toggle_status"),
         ("lesson_", "lesson.open"),
         ("task_", "task.open"),
@@ -196,7 +220,7 @@ def save_lesson_source_file(message):
     with open(save_path, "wb") as new_file:
         new_file.write(downloaded_file)
 
-    sql_return.save_file(message.content_type, new_file_name, save_path, message.from_user.id)
+    sql_return.save_file(message.content_type, original_file_name, save_path, message.from_user.id)
 
     return {
         "file_path": save_path,
@@ -204,6 +228,86 @@ def save_lesson_source_file(message):
         "stored_file_name": new_file_name,
         "original_file_name": original_file_name,
     }
+
+
+def save_lesson_attachment_file(message):
+    if message.content_type not in ("photo", "document"):
+        raise ValueError("Нужно отправить документ или фотографию.")
+
+    if not os.path.exists("files"):
+        os.makedirs("files")
+
+    if message.content_type == "photo":
+        file_info = bot.get_file(message.photo[-1].file_id)
+        if file_info.file_size > MAX_UPLOAD_SIZE_BYTES:
+            raise ValueError("Файл слишком большой. Максимальный размер - 15 МБ.")
+
+        downloaded_file = bot.download_file(file_info.file_path)
+        file_extension = os.path.splitext(file_info.file_path)[1].lower() or ".jpg"
+        if file_extension not in [".jpg", ".jpeg", ".png", ".webp"]:
+            file_extension = ".jpg"
+        original_file_name = f"lesson_photo{file_extension}"
+    else:
+        file_info = bot.get_file(message.document.file_id)
+        if file_info.file_size > MAX_UPLOAD_SIZE_BYTES:
+            raise ValueError("Файл слишком большой. Максимальный размер - 15 МБ.")
+
+        downloaded_file = bot.download_file(file_info.file_path)
+        original_file_name = message.document.file_name or os.path.basename(file_info.file_path) or "lesson_file"
+        file_extension = os.path.splitext(original_file_name)[1].lower()
+        if not file_extension:
+            file_extension = os.path.splitext(file_info.file_path)[1].lower()
+        if not file_extension:
+            file_extension = ".bin"
+
+    new_file_name = f'{sql_return.next_name("files")}{file_extension}'
+    save_path = f"files/{new_file_name}"
+
+    with open(save_path, "wb") as new_file:
+        new_file.write(downloaded_file)
+
+    sql_return.save_file(
+        message.content_type,
+        original_file_name,
+        save_path,
+        message.from_user.id
+    )
+
+    return {
+        "file_id": os.path.splitext(new_file_name)[0],
+        "file_path": save_path,
+        "file_type": message.content_type,
+        "stored_file_name": new_file_name,
+        "original_file_name": original_file_name,
+    }
+
+
+def get_lesson_file_id(lesson_data) -> str | None:
+    if not lesson_data or len(lesson_data) <= 5:
+        return None
+    return lesson_data[5]
+
+
+def send_saved_file_to_chat(chat_id: int, file_info, caption: str | None = None):
+    if not file_info:
+        raise ValueError("Файл не найден.")
+
+    file_type = file_info[2]
+    file_name = file_info[3]
+    file_path = file_info[4]
+
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(file_path)
+
+    if file_type == "photo":
+        with open(file_path, "rb") as photo:
+            bot.send_photo(chat_id, photo, caption=caption)
+    else:
+        with open(file_path, "rb") as document:
+            send_kwargs = {"caption": caption}
+            if file_name:
+                send_kwargs["visible_file_name"] = file_name
+            bot.send_document(chat_id, document, **send_kwargs)
 
 
 def split_sql_statements(sql_text: str) -> list[str]:
@@ -839,6 +943,18 @@ def handle_query(call):
         course_content(call, int(call.data.split('_')[-2]), int(call.data.split("_")[-1]))
     elif call.data.startswith("gpt_add_lesson_"):
         gpt_add_lesson_start(call, int(call.data.split("_")[-1]))
+    elif call.data.startswith("attach_lesson_file_"):
+        attach_lesson_file(
+            call,
+            int(call.data.split('_')[-2]),
+            int(call.data.split('_')[-1]),
+        )
+    elif call.data.startswith("download_lesson_file_"):
+        download_lesson_file(
+            call,
+            int(call.data.split('_')[-2]),
+            int(call.data.split('_')[-1]),
+        )
     elif call.data.startswith("toggle_task_"):
         toggle_task_open_close(
             call,
@@ -1693,7 +1809,8 @@ def course_content(call, course_id, page=0):
 
     markup = types.InlineKeyboardMarkup()
     for lesson in page_courses:
-        markup.add(types.InlineKeyboardButton(f"{lesson[2]}", callback_data=f'lesson_{course_id}_{lesson[0]}_0'))
+        lesson_title = f"📎 {lesson[2]}" if get_lesson_file_id(lesson) else f"{lesson[2]}"
+        markup.add(types.InlineKeyboardButton(lesson_title, callback_data=f'lesson_{course_id}_{lesson[0]}_0'))
 
     navigation = []
     if page > 0:
@@ -1719,17 +1836,30 @@ def lesson_content(call, course_id, lesson_id, page=0):
         bot.send_message(call.message.chat.id, "Вы не зарегистрированы.")
         return
 
-    is_admin = str(call.from_user.id) == str(config["admin_id"])
+    lesson_data = sql_return.get_lesson_from_id(lesson_id)
+    if not lesson_data or int(lesson_data[1]) != int(course_id):
+        bot.send_message(call.message.chat.id, "Урок не найден.")
+        return
 
-    tasks = sql_return.tasks_in_lesson(lesson_id)  
+    is_admin = str(call.from_user.id) == str(config["admin_id"])
+    is_dev = sql_return.is_course_dev(call.from_user.id, sql_return.developers_list(course_id))
+    lesson_file_id = get_lesson_file_id(lesson_data)
+    tasks = sql_return.tasks_in_lesson(lesson_id)
 
     courses_per_page = 8
-    total_pages = (len(tasks) + courses_per_page - 1) // courses_per_page
+    total_pages = max(1, (len(tasks) + courses_per_page - 1) // courses_per_page)
     page_courses = tasks[page * courses_per_page:(page + 1) * courses_per_page]
 
-    description = "Содержание урока:\n"
+    description = f"Содержание урока: {lesson_data[2]}\n"
+    if lesson_file_id:
+        description += "\n📎 К уроку прикреплён файл."
+    if not tasks:
+        description += "\n\nВ этом уроке пока нет задач."
 
     markup = types.InlineKeyboardMarkup()
+    if lesson_file_id:
+        markup.add(types.InlineKeyboardButton("📎 Получить файл урока", callback_data=f'download_lesson_file_{course_id}_{lesson_id}'))
+
     for lesson in page_courses:
         verdict = sql_return.task_status_by_user(call.from_user.id, lesson[0])
         markup.add(types.InlineKeyboardButton(f"{verdict} {lesson[2]}", callback_data=f'task_{lesson[0]}_{lesson_id}_{course_id}'))
@@ -1740,10 +1870,13 @@ def lesson_content(call, course_id, lesson_id, page=0):
     if page < total_pages - 1:
         navigation.append(types.InlineKeyboardButton("➡️ Вперед", callback_data=f'lesson_{course_id}_{lesson_id}_{page + 1}'))
 
-    if (is_admin or sql_return.is_course_dev(call.from_user.id, sql_return.developers_list(course_id))) and page == 0:
+    if (is_admin or is_dev) and page == 0:
+        attach_button_text = "♻️ Заменить файл урока" if lesson_file_id else "📤 Прикрепить файл к уроку"
+        markup.add(types.InlineKeyboardButton(attach_button_text, callback_data=f'attach_lesson_file_{course_id}_{lesson_id}'))
         markup.add(types.InlineKeyboardButton("➕ Создать задачу", callback_data=f'create_task_{lesson_id}_{course_id}'))
 
-    markup.row(*navigation)
+    if navigation:
+        markup.row(*navigation)
     markup.add(types.InlineKeyboardButton("🔙 К содержанию курса", callback_data=f"content_{course_id}_0"))
     try:
         bot.edit_message_text(f"{description}\nСтраница {page + 1} из {total_pages}:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
@@ -1934,6 +2067,109 @@ def create_lesson_name(message, editing_message_id, course_id):
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("🔙 К списку уроков", callback_data=f"content_{course_id}_0"))
     bot.edit_message_text(f"""✅ Урок "{name}" успешно создан!""", chat_id=message.chat.id, message_id=editing_message_id, reply_markup=markup)
+
+def attach_lesson_file(call, course_id: int, lesson_id: int):
+    if not is_course_admin_or_dev(call.from_user.id, course_id):
+        bot.send_message(call.message.chat.id, "Только админ и разработчики курса могут прикреплять файлы к уроку.")
+        return
+
+    lesson_data = sql_return.get_lesson_from_id(lesson_id)
+    if not lesson_data or int(lesson_data[1]) != int(course_id):
+        bot.send_message(call.message.chat.id, "Урок не найден.")
+        return
+
+    bot.send_message(
+        call.message.chat.id,
+        "Отправьте документ или фотографию, которую нужно прикрепить к уроку.\n"
+        "Для отмены отправьте `cancel` или `/stop`.",
+        parse_mode="Markdown"
+    )
+    bot.register_next_step_handler(call.message, receive_lesson_file, course_id, lesson_id)
+
+def receive_lesson_file(message, course_id: int, lesson_id: int):
+    log_user_action(
+        message.from_user,
+        "lesson.attach_file_input",
+        f"course_id={course_id}, lesson_id={lesson_id}, content_type={message.content_type}"
+    )
+
+    if not is_course_admin_or_dev(message.from_user.id, course_id):
+        bot.send_message(message.chat.id, "Только админ и разработчики курса могут прикреплять файлы к уроку.")
+        return
+
+    lesson_data = sql_return.get_lesson_from_id(lesson_id)
+    if not lesson_data or int(lesson_data[1]) != int(course_id):
+        bot.send_message(message.chat.id, "Урок не найден.")
+        return
+
+    if message.content_type == "text" and (message.text or "").strip().lower() in {"cancel", "/stop", "stop"}:
+        bot.send_message(message.chat.id, "Прикрепление файла отменено.")
+        return
+
+    if message.content_type not in ("photo", "document"):
+        bot.send_message(message.chat.id, "Нужно отправить документ или фотографию.")
+        bot.register_next_step_handler(message, receive_lesson_file, course_id, lesson_id)
+        return
+
+    try:
+        file_data = save_lesson_attachment_file(message)
+        sql_return.set_lesson_file(lesson_id, file_data["file_id"])
+        sql_return.log_action(
+            message.from_user.id,
+            "attach_lesson_file",
+            f"{lesson_id} {file_data['file_id']}"
+        )
+    except ValueError as error:
+        bot.send_message(message.chat.id, str(error))
+        bot.register_next_step_handler(message, receive_lesson_file, course_id, lesson_id)
+        return
+    except telebot.apihelper.ApiTelegramException as error:
+        if "file is too big" in str(error).lower():
+            bot.send_message(message.chat.id, "Файл слишком большой для загрузки через Telegram API.")
+        else:
+            bot.send_message(message.chat.id, "Не удалось обработать файл. Попробуйте ещё раз.")
+        bot.register_next_step_handler(message, receive_lesson_file, course_id, lesson_id)
+        return
+
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🔙 К уроку", callback_data=f"lesson_{course_id}_{lesson_id}_0"))
+    bot.send_message(
+        message.chat.id,
+        f'Файл успешно прикреплён к уроку "{lesson_data[2]}".',
+        reply_markup=markup
+    )
+
+def download_lesson_file(call, course_id: int, lesson_id: int):
+    if not can_access_course_materials(call.from_user.id, course_id):
+        bot.send_message(call.message.chat.id, "У вас нет доступа к материалам этого курса.")
+        return
+
+    lesson_data = sql_return.get_lesson_from_id(lesson_id)
+    if not lesson_data or int(lesson_data[1]) != int(course_id):
+        bot.send_message(call.message.chat.id, "Урок не найден.")
+        return
+
+    lesson_file_id = get_lesson_file_id(lesson_data)
+    if not lesson_file_id:
+        bot.send_message(call.message.chat.id, "К этому уроку пока не прикреплён файл.")
+        return
+
+    file_info = sql_return.get_file(lesson_file_id)
+    if not file_info:
+        bot.send_message(call.message.chat.id, "Не удалось найти прикреплённый файл.")
+        return
+
+    try:
+        send_saved_file_to_chat(
+            call.message.chat.id,
+            file_info,
+            caption=f'Материалы к уроку "{lesson_data[2]}"'
+        )
+        sql_return.log_action(call.from_user.id, "download_lesson_file", f"{lesson_id} {lesson_file_id}")
+    except FileNotFoundError:
+        bot.send_message(call.message.chat.id, "Файл найден в базе, но отсутствует на диске.")
+    except Exception:
+        bot.send_message(call.message.chat.id, "Не удалось отправить файл. Попробуйте позже.")
 
 def create_task(call):
     bot.edit_message_text(f"""🎓 Вы создаёте задачу.
