@@ -44,6 +44,9 @@ CROSS_CUSTOM_EMOJI_ID = "5416076321442777828"
 BROADCAST_ALLOWED_CONTENT_TYPES = {
     "text", "photo", "document", "video", "audio", "voice", "animation", "sticker"
 }
+SOLUTION_SUBMISSION_ALLOWED_CONTENT_TYPES = {
+    "text", "photo", "document"
+}
 
 gpt_sql_requests_lock = Lock()
 gpt_sql_requests = {}
@@ -52,6 +55,8 @@ lesson_notifications_lock = Lock()
 broadcast_drafts_lock = Lock()
 broadcast_drafts = {}
 broadcast_draft_seq = 0
+solution_submission_sessions_lock = Lock()
+solution_submission_sessions = {}
 
 TASKS_COLUMN_ALIASES = {
     "text": "description",
@@ -202,6 +207,124 @@ def next_broadcast_draft_id() -> int:
         return broadcast_draft_seq
 
 
+def has_active_solution_submission(user_id: int) -> bool:
+    with solution_submission_sessions_lock:
+        session = solution_submission_sessions.get(int(user_id))
+        return bool(session and session.get("status") == "collecting")
+
+
+def get_solution_submission_session(user_id: int):
+    with solution_submission_sessions_lock:
+        session = solution_submission_sessions.get(int(user_id))
+        if not session:
+            return None
+        return dict(session)
+
+
+def cancel_solution_submission_session(user_id: int):
+    with solution_submission_sessions_lock:
+        return solution_submission_sessions.pop(int(user_id), None)
+
+
+def start_solution_submission_session(user_id: int, chat_id: int, task, prompt_message_id: int):
+    task_id, lesson_id, task_title, _, _, task_description = task
+    course_id = sql_return.get_course_from_lesson_id(lesson_id)
+    session = {
+        "user_id": int(user_id),
+        "chat_id": int(chat_id),
+        "course_id": int(course_id),
+        "lesson_id": int(lesson_id),
+        "task_id": int(task_id),
+        "task_title": str(task_title or "Без названия"),
+        "task_description": str(task_description or ""),
+        "task_snapshot": tuple(task),
+        "prompt_message_id": int(prompt_message_id),
+        "status": "collecting",
+        "text_chunks": [],
+        "attachments": [],
+        "processed_message_ids": set(),
+        "started_at": time.time(),
+    }
+    with solution_submission_sessions_lock:
+        solution_submission_sessions[int(user_id)] = session
+    return dict(session)
+
+
+def update_solution_submission_session(user_id: int, updater):
+    with solution_submission_sessions_lock:
+        session = solution_submission_sessions.get(int(user_id))
+        if not session:
+            return None
+        updater(session)
+        return dict(session)
+
+
+def mark_solution_submission_finalizing(user_id: int):
+    with solution_submission_sessions_lock:
+        session = solution_submission_sessions.get(int(user_id))
+        if not session or session.get("status") != "collecting":
+            return None
+        session["status"] = "finalizing"
+        return dict(session)
+
+
+def build_solution_submission_markup():
+    markup = types.InlineKeyboardMarkup()
+    markup.row(
+        ui_button("Отправить решение", callback_data="solution_submit_finish", style="success", icon_custom_emoji_id=CHECK_CUSTOM_EMOJI_ID),
+        ui_button("Отменить", callback_data="solution_submit_cancel", style="danger", icon_custom_emoji_id=CROSS_CUSTOM_EMOJI_ID),
+    )
+    return markup
+
+
+def build_solution_submission_text(task, session: dict) -> str:
+    task_id, _, task_title, task_status, task_deadline, task_description = task
+    task_status_label = TASK_STATUS_LABELS.get(task_status, str(task_status or "Неизвестно"))
+    text_count = len(session.get("text_chunks") or [])
+    file_count = len(session.get("attachments") or [])
+    text_status = f"{text_count} сообщ." if text_count else "нет"
+    file_status = f"{file_count} шт." if file_count else "нет"
+
+    return (
+        "<b>Сдача решения</b>\n"
+        "Отправляйте текст решения и любое количество фото/документов отдельными сообщениями или альбомом.\n"
+        "Когда всё будет готово, нажмите кнопку <b>Отправить решение</b>.\n"
+        "Для быстрой отмены можно отправить <code>/cancel</code>.\n\n"
+        f"<b>Текст уже добавлен:</b> {html.escape(text_status)}\n"
+        f"<b>Файлов уже добавлено:</b> {html.escape(file_status)}\n\n"
+        f"📌 <b>Название задачи</b>: {html.escape(str(task_title or 'Без названия'))}\n"
+        f"🔖 <b>Статус</b>: {html.escape(task_status_label)}\n"
+        f"⏰ <b>Дедлайн</b>: {html.escape(format_deadline(task_deadline))}\n"
+        f"📝 <b>Текст задачи</b>: {html.escape(str(task_description or 'Нет текста задачи'))}"
+    )
+
+
+def refresh_solution_submission_prompt(user_id: int):
+    session = get_solution_submission_session(user_id)
+    if not session:
+        return
+    task = session.get("task_snapshot")
+    if not task:
+        return
+    try:
+        bot.edit_message_text(
+            build_solution_submission_text(task, session),
+            chat_id=session["chat_id"],
+            message_id=session["prompt_message_id"],
+            parse_mode="HTML",
+            reply_markup=build_solution_submission_markup(),
+        )
+    except Exception:
+        pass
+
+
+def build_solution_answer_text(session: dict) -> str:
+    text_chunks = [str(chunk).strip() for chunk in session.get("text_chunks") or [] if str(chunk).strip()]
+    if not text_chunks:
+        return ""
+    return "\n\n".join(text_chunks)
+
+
 def normalize_user_action_text(value, max_len: int = 240) -> str:
     text = " ".join(str(value).split())
     if len(text) > max_len:
@@ -271,6 +394,8 @@ def callback_action_name(callback_data: str) -> str:
         ("create_course", "course.create_prompt"),
         ("create_lesson", "lesson.create_prompt"),
         ("create_task", "task.create_prompt"),
+        ("solution_submit_finish", "solution.submit_finish"),
+        ("solution_submit_cancel", "solution.submit_cancel"),
         ("solution", "solution.open"),
         ("self_reject", "solution.self_reject"),
         ("undo_self_reject", "solution.self_reject_undo"),
@@ -392,6 +517,69 @@ def save_lesson_attachment_file(message):
     }
 
 
+def save_solution_attachment_file(attachment: dict, creator_id: int):
+    content_type = attachment.get("content_type")
+    if content_type not in ("photo", "document"):
+        raise ValueError("К решению можно прикреплять только фотографии и документы.")
+
+    if not os.path.exists("files"):
+        os.makedirs("files")
+
+    telegram_file_id = attachment.get("telegram_file_id")
+    if not telegram_file_id:
+        raise ValueError("Не удалось определить Telegram file_id для вложения.")
+
+    file_info = bot.get_file(telegram_file_id)
+    if file_info.file_size > MAX_UPLOAD_SIZE_BYTES:
+        raise ValueError("Файл слишком большой. Максимальный размер - 15 МБ.")
+
+    downloaded_file = bot.download_file(file_info.file_path)
+
+    if content_type == "photo":
+        file_extension = os.path.splitext(file_info.file_path)[1].lower() or ".jpg"
+        if file_extension not in [".jpg", ".jpeg", ".png", ".webp"]:
+            file_extension = ".jpg"
+        original_file_name = attachment.get("original_file_name") or f"solution_photo{file_extension}"
+    else:
+        original_file_name = attachment.get("original_file_name") or os.path.basename(file_info.file_path) or "solution_file"
+        file_extension = os.path.splitext(original_file_name)[1].lower()
+        if not file_extension:
+            file_extension = os.path.splitext(file_info.file_path)[1].lower()
+        if not file_extension:
+            file_extension = ".bin"
+
+    new_file_name = f'{sql_return.next_name("files")}{file_extension}'
+    save_path = f"files/{new_file_name}"
+
+    with open(save_path, "wb") as new_file:
+        new_file.write(downloaded_file)
+
+    file_id = sql_return.save_file(content_type, original_file_name, save_path, creator_id)
+    return {
+        "file_id": file_id,
+        "file_path": save_path,
+        "file_type": content_type,
+        "stored_file_name": new_file_name,
+        "original_file_name": original_file_name,
+    }
+
+
+def cleanup_saved_solution_files(saved_files: list[dict]):
+    for file_data in saved_files:
+        file_id = file_data.get("file_id")
+        file_path = file_data.get("file_path")
+        try:
+            if file_id:
+                sql_return.delete_file(file_id)
+        except Exception:
+            pass
+        try:
+            if file_path and os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception:
+            pass
+
+
 def get_lesson_file_id(lesson_data) -> str | None:
     if not lesson_data or len(lesson_data) <= 5:
         return None
@@ -510,11 +698,20 @@ def build_pagination_buttons(prefix: str, page: int, total_pages: int):
     return buttons
 
 
+def get_solution_file_infos(solution_data: dict | None) -> list[tuple]:
+    if not solution_data:
+        return []
+    answer_id = solution_data.get("answer_id")
+    if answer_id is None:
+        return []
+    return sql_return.get_student_answer_files(answer_id, solution_data.get("files_id"))
+
+
 def get_solution_file_info(files_id):
-    if not files_id:
+    file_ids = sql_return.parse_file_ids_field(files_id)
+    if not file_ids:
         return None
-    raw_file_id = str(files_id).split()[0]
-    return sql_return.get_file(raw_file_id.split(".")[0])
+    return sql_return.get_file(file_ids[0])
 
 
 def solution_owner_name(solution_data: dict) -> str:
@@ -533,7 +730,8 @@ def can_access_solution(user_id: int, solution_data: dict | None) -> bool:
 
 def build_solution_list_button_text(solution_data: dict, viewer_id: int) -> str:
     role_icon = "👨‍🎓" if int(solution_data["student_id"]) == int(viewer_id) else "👨‍🏫"
-    file_icon = "📎" if solution_data.get("files_id") else ""
+    file_count = int(solution_data.get("file_count") or 0)
+    file_icon = f"📎{file_count}" if file_count else ""
     status_icon = VERDICT_ICONS.get(solution_data.get("verdict"), "⌛️")
 
     if int(solution_data["student_id"]) == int(viewer_id):
@@ -555,8 +753,14 @@ def build_solution_list_button_text(solution_data: dict, viewer_id: int) -> str:
 
 def build_solution_detail_text(solution_data: dict, comment_override: str | None = None) -> str:
     comment = solution_data.get("comment") if comment_override is None else comment_override
-    file_info = get_solution_file_info(solution_data.get("files_id"))
-    file_name = file_info[3] if file_info else "Нет"
+    file_infos = get_solution_file_infos(solution_data)
+    if file_infos:
+        visible_names = [str(file_info[3] or file_info[4] or f"Файл {index + 1}") for index, file_info in enumerate(file_infos[:8])]
+        file_name = "\n".join(f"{index + 1}. {name}" for index, name in enumerate(visible_names))
+        if len(file_infos) > len(visible_names):
+            file_name += f"\n... и ещё {len(file_infos) - len(visible_names)}"
+    else:
+        file_name = "Нет"
     answer_text = truncate_block(solution_data.get("answer_text"), 1400)
     task_text = truncate_block(solution_data.get("task_description"), 1400)
 
@@ -570,7 +774,7 @@ def build_solution_detail_text(solution_data: dict, comment_override: str | None
         f"<b>Задача #{solution_data['task_id']}:</b> {html.escape(str(solution_data.get('task_title') or 'Без названия'))}\n"
         f"<b>Статус задачи:</b> {html.escape(TASK_STATUS_LABELS.get(solution_data.get('task_status'), str(solution_data.get('task_status') or 'Неизвестно')))}\n"
         f"<b>Дедлайн:</b> {html.escape(format_deadline(solution_data.get('task_deadline')))}\n"
-        f"<b>Файл решения:</b> {html.escape(str(file_name))}\n"
+        f"<b>Файлы решения:</b> {html.escape(str(len(file_infos)))}\n{html.escape(str(file_name))}\n"
         f"<b>Комментарий к вердикту:</b> {html.escape(str(comment if comment else 'Нет'))}\n\n"
         f"<b>Текст задачи:</b>\n{html.escape(task_text)}\n\n"
         f"<b>Текст решения:</b>\n{html.escape(answer_text)}"
@@ -684,8 +888,10 @@ def build_broadcast_confirm_markup(draft_id: int):
 
 def build_solution_view_markup(solution_data: dict, viewer_id: int, page: int = 0):
     markup = types.InlineKeyboardMarkup()
-    if solution_data.get("files_id"):
-        markup.add(ui_button("📎 Открыть файл решения", callback_data=f"download_solution_file_{solution_data['answer_id']}"))
+    file_count = int(solution_data.get("file_count") or 0)
+    if file_count:
+        caption = "📎 Открыть файл решения" if file_count == 1 else f"📎 Открыть файлы решения ({file_count})"
+        markup.add(ui_button(caption, callback_data=f"download_solution_file_{solution_data['answer_id']}"))
     if int(solution_data["student_id"]) == int(viewer_id) and solution_data["verdict"] is None:
         markup.add(ui_button("💔 Отменить", callback_data=f"self_reject_{solution_data['answer_id']}_{page}", style="danger", icon_custom_emoji_id=CROSS_CUSTOM_EMOJI_ID))
     if int(solution_data["student_id"]) == int(viewer_id) and solution_data["verdict"] == "self_reject":
@@ -702,8 +908,10 @@ def build_check_solution_markup(solution_data: dict, check_type: str):
         ui_button("Отклонить", callback_data=f"check-final_reject_{answer_id}", style="danger", icon_custom_emoji_id=CROSS_CUSTOM_EMOJI_ID)
     )
     markup.add(ui_button("✍️ Добавить комментарий", callback_data=f"check-add-comment_{check_type}_{answer_id}", style="primary"))
-    if solution_data.get("files_id"):
-        markup.add(ui_button("📎 Открыть файл решения", callback_data=f"download_solution_file_{answer_id}"))
+    file_count = int(solution_data.get("file_count") or 0)
+    if file_count:
+        caption = "📎 Открыть файл решения" if file_count == 1 else f"📎 Открыть файлы решения ({file_count})"
+        markup.add(ui_button(caption, callback_data=f"download_solution_file_{answer_id}"))
     markup.add(ui_button("⬅️ К проверке", callback_data="mm_check_0"))
     return markup
 
@@ -1341,9 +1549,234 @@ def gpt_sql_retry_feedback(message, request_id: int):
     )
     Thread(target=run_gpt_sql_generation, args=(request_id, feedback), daemon=True).start()
 
+
+def build_main_menu_only_markup():
+    markup = types.InlineKeyboardMarkup()
+    markup.add(ui_button("🏠 Главное меню", callback_data="mm_main_menu"))
+    return markup
+
+
+def close_solution_submission_prompt(session: dict, text: str, reply_markup=None):
+    if not session:
+        return
+    try:
+        bot.edit_message_text(
+            text,
+            chat_id=session["chat_id"],
+            message_id=session["prompt_message_id"],
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+        )
+    except Exception:
+        pass
+
+
+def notify_solution_reviewers(course_id: int, user_id: int):
+    user_name = sql_return.get_user_name(user_id) or ("Неизвестный", "пользователь")
+    reviewer_ids = []
+    for raw_id in sql_return.developers_list(course_id).split():
+        try:
+            reviewer_ids.append(int(raw_id))
+        except ValueError:
+            continue
+    for reviewer_id in reviewer_ids:
+        bot.send_message(
+            reviewer_id,
+            f"Поступило новое решение для проверки от {user_name[0]} {user_name[1]}"
+        )
+
+
+def finalize_solution_submission(user_id: int) -> tuple[dict | None, int | None, str | None]:
+    session = mark_solution_submission_finalizing(user_id)
+    if not session:
+        return None, None, "Активная сдача решения не найдена."
+
+    answer_text = build_solution_answer_text(session)
+    attachments = sorted(session.get("attachments") or [], key=lambda item: item.get("message_id", 0))
+
+    if not answer_text and not attachments:
+        update_solution_submission_session(user_id, lambda current: current.update({"status": "collecting"}))
+        return session, None, "Нужно добавить текст решения или хотя бы один файл."
+
+    saved_files = []
+    try:
+        file_ids = []
+        for attachment in attachments:
+            file_data = save_solution_attachment_file(attachment, user_id)
+            saved_files.append(file_data)
+            file_ids.append(file_data["file_id"])
+
+        answer_id = sql_return.new_student_answer(
+            session["task_id"],
+            user_id,
+            answer_text or None,
+            file_ids=file_ids,
+        )
+    except ValueError as error:
+        cleanup_saved_solution_files(saved_files)
+        update_solution_submission_session(user_id, lambda current: current.update({"status": "collecting"}))
+        return session, None, str(error)
+    except Exception as error:
+        cleanup_saved_solution_files(saved_files)
+        update_solution_submission_session(user_id, lambda current: current.update({"status": "collecting"}))
+        return session, None, f"Не удалось сохранить решение: {error}"
+
+    cancel_solution_submission_session(user_id)
+    try:
+        notify_solution_reviewers(session["course_id"], user_id)
+    except Exception:
+        pass
+    sql_return.log_action(user_id, "send_final", f"{session['task_id']} answer_id={answer_id} files={len(file_ids)}")
+    return session, answer_id, None
+
+
+def append_solution_submission_text(user_id: int, message_id: int, text: str) -> bool:
+    stored = {"updated": False}
+    clean_text = str(text or "").strip()
+    if not clean_text:
+        return False
+
+    def updater(session):
+        processed = session.setdefault("processed_message_ids", set())
+        if message_id in processed:
+            return
+        processed.add(message_id)
+        session.setdefault("text_chunks", []).append(clean_text)
+        stored["updated"] = True
+
+    update_solution_submission_session(user_id, updater)
+    return stored["updated"]
+
+
+def append_solution_submission_attachment(user_id: int, message) -> tuple[bool, str | None]:
+    if message.content_type == "photo":
+        if not message.photo:
+            return False, "Не удалось прочитать фотографию."
+        telegram_file_id = message.photo[-1].file_id
+        original_file_name = f"solution_photo_{message.message_id}.jpg"
+    elif message.content_type == "document":
+        if not message.document:
+            return False, "Не удалось прочитать документ."
+        telegram_file_id = message.document.file_id
+        original_file_name = message.document.file_name or f"solution_document_{message.message_id}"
+    else:
+        return False, "К решению можно прикреплять только фото и документы."
+
+    try:
+        file_info = bot.get_file(telegram_file_id)
+    except Exception:
+        return False, "Не удалось получить данные файла из Telegram. Попробуйте отправить его ещё раз."
+
+    if file_info.file_size > MAX_UPLOAD_SIZE_BYTES:
+        return False, "Файл слишком большой. Максимальный размер - 15 МБ."
+
+    stored = {"updated": False, "error": None}
+
+    def updater(session):
+        processed = session.setdefault("processed_message_ids", set())
+        if message.message_id in processed:
+            return
+        processed.add(message.message_id)
+
+        session.setdefault("attachments", []).append({
+            "message_id": message.message_id,
+            "content_type": message.content_type,
+            "telegram_file_id": telegram_file_id,
+            "original_file_name": original_file_name,
+            "media_group_id": message.media_group_id,
+            "validated_size": file_info.file_size,
+        })
+
+        caption = (message.caption or "").strip()
+        if caption:
+            session.setdefault("text_chunks", []).append(caption)
+        stored["updated"] = True
+
+    update_solution_submission_session(user_id, updater)
+    return stored["updated"], stored["error"]
+
+
+def cancel_solution_submission_from_message(message, reopen_start: bool = False):
+    session = cancel_solution_submission_session(message.from_user.id)
+    if session:
+        close_solution_submission_prompt(
+            session,
+            f"{CROSS_HTML} Сдача решения отменена.",
+            reply_markup=build_main_menu_only_markup(),
+        )
+    if reopen_start:
+        start(message)
+    else:
+        bot.send_message(message.chat.id, "Сдача решения отменена.", reply_markup=build_main_menu_only_markup())
+
+
+@bot.message_handler(
+    func=lambda message: has_active_solution_submission(message.from_user.id),
+    content_types=[
+        "text", "photo", "document", "audio", "video", "voice", "animation",
+        "sticker", "location", "contact", "poll"
+    ],
+)
+def handle_active_solution_submission(message):
+    log_user_action(
+        message.from_user,
+        "solution.submit_collect",
+        f"content_type={message.content_type}"
+    )
+
+    session = get_solution_submission_session(message.from_user.id)
+    if not session:
+        return
+
+    if message.chat.id != session["chat_id"]:
+        return
+
+    if message.content_type == "text":
+        command = (message.text or "").strip()
+        lowered = command.lower()
+
+        if lowered in {"/cancel", "/stop", "cancel", "stop"}:
+            cancel_solution_submission_from_message(message)
+            return
+        if lowered == "/start":
+            cancel_solution_submission_from_message(message, reopen_start=True)
+            return
+        if lowered in {"/done", "/finish", "готово"}:
+            session_snapshot, answer_id, error_text = finalize_solution_submission(message.from_user.id)
+            if error_text:
+                bot.send_message(message.chat.id, error_text)
+                refresh_solution_submission_prompt(message.from_user.id)
+                return
+            close_solution_submission_prompt(
+                session_snapshot,
+                f"{CHECK_HTML} Решение #{answer_id} отправлено на проверку.",
+                reply_markup=build_main_menu_only_markup(),
+            )
+            bot.send_message(message.chat.id, "Решение отправлено на проверку", reply_markup=build_main_menu_only_markup())
+            return
+        if command.startswith("/"):
+            bot.send_message(message.chat.id, "Во время сдачи используйте /done для отправки или /cancel для отмены.")
+            return
+
+        if append_solution_submission_text(message.from_user.id, message.message_id, command):
+            refresh_solution_submission_prompt(message.from_user.id)
+        return
+
+    if message.content_type not in SOLUTION_SUBMISSION_ALLOWED_CONTENT_TYPES:
+        bot.send_message(message.chat.id, "Во время сдачи решения поддерживаются только текст, фото и документы.")
+        return
+
+    stored, error_text = append_solution_submission_attachment(message.from_user.id, message)
+    if error_text:
+        bot.send_message(message.chat.id, error_text)
+        return
+    if stored:
+        refresh_solution_submission_prompt(message.from_user.id)
+
 @bot.message_handler(commands=["start"])
 def start(message):
     log_user_action(message.from_user, "command.start")
+    cancel_solution_submission_session(message.from_user.id)
     user = sql_return.find_user_id(message.from_user.id)
     if user and user[3] == "pending":
         bot.reply_to(message, "Вы уже подали заявку, ожидайте ответа администратора.")
@@ -1420,6 +1853,7 @@ def handle_query(call):
         mm_answers(call, int(call.data.split('_')[-1]))
         # all_solutions(call, int(call.data.split("_")[-1]))
     elif call.data.startswith("mm_main_menu"):
+        cancel_solution_submission_session(call.from_user.id)
         user = sql_return.find_user_id(call.from_user.id)
 
         if user and user[3] == "pending":
@@ -1495,6 +1929,27 @@ def handle_query(call):
         create_lesson(call)
     elif call.data.startswith("create_task"):
         create_task(call)
+    elif call.data.startswith("solution_submit_finish"):
+        session_snapshot, answer_id, error_text = finalize_solution_submission(call.from_user.id)
+        if error_text:
+            bot.send_message(call.message.chat.id, error_text)
+            refresh_solution_submission_prompt(call.from_user.id)
+        else:
+            close_solution_submission_prompt(
+                session_snapshot,
+                f"{CHECK_HTML} Решение #{answer_id} отправлено на проверку.",
+                reply_markup=build_main_menu_only_markup(),
+            )
+            bot.send_message(call.message.chat.id, "Решение отправлено на проверку", reply_markup=build_main_menu_only_markup())
+    elif call.data.startswith("solution_submit_cancel"):
+        session = cancel_solution_submission_session(call.from_user.id)
+        if session:
+            close_solution_submission_prompt(
+                session,
+                f"{CROSS_HTML} Сдача решения отменена.",
+                reply_markup=build_main_menu_only_markup(),
+            )
+        bot.send_message(call.message.chat.id, "Сдача решения отменена.", reply_markup=build_main_menu_only_markup())
     elif call.data.startswith("solution"):
         parts = call.data.split("_")
         answer_id = int(parts[1]) if len(parts) > 2 else int(parts[-1])
@@ -1673,133 +2128,28 @@ def mm_send_task(call, course_id, lesson_id, page=0):
     except:
         pass
 
-new_student_answer_dict = dict([])
-
 def mm_send_final(call, lesson_id, course_id, task_id):
     task = sql_return.task_info(task_id)
-    
-    if task:
-        task_id, lesson_id, task_title, task_status, task_deadline, task_description = task
-
-        status_translation = {
-            'open': 'Открыт',
-            'arc': 'Архивирован',
-            'dev': 'В разработке'
-        }
-        task_status = status_translation.get(task_status, 'Неизвестен')
-
-        # if task_deadline:
-        #     deadline_date = datetime.datetime.strptime(task_deadline, '%Y-%m-%d %H:%M')
-        #     current_date = datetime.datetime.now()
-        #     days_left = (deadline_date - current_date).total_seconds() / (60 * 60 * 24)
-        #     if task_status == 'Архивирован' or deadline_date < current_date:
-        #         deadline_str = deadline_date.strftime('%d-%m-%Y %H:%M')
-        #         deadline_info = f"🗓 <b>Дедлайн</b>: {deadline_str}"
-        #     elif days_left < 2:
-        #         deadline_str = deadline_date.strftime('%d-%m-%Y %H:%M')
-        #         deadline_info = f"🔥 <b>Дедлайн через</b>: {time_left_str} ({deadline_str})"
-        #     else:
-        #         time_left = relativedelta(deadline_date, current_date)
-        #         time_left_str = f"{time_left.days} дней, {time_left.hours} часов, {time_left.minutes} минут"
-        #         deadline_str = deadline_date.strftime('%d-%m-%Y %H:%M')
-        #         deadline_info = f"⏰ <b>Дедлайн через</b>: {time_left_str} ({deadline_str})"
-        # else:
-        deadline_info = "⏰ <b>Дедлайн</b>: Не указан"
-
-        task_info_message = (f"Вы начали сдачу решения для задачи, приведённой ниже. Если вы хотите отменить это действие, напишите вместо текста решения \"/stop\" или \"/start\".\n\nПрикрепить к решению можно максимум 1 файл (документ / изображение). Подробнее - /why_only_one_file\n\n"
-                             f"📌 <b>Название задачи</b>: {task_title}\n"
-                             f"🔖 <b>Статус</b>: {task_status}\n"
-                             f"{deadline_info}\n"
-                             f"📝 <b>Текст задачи</b>: {task_description if task_description else 'Нет текста задачи'}")
-
-        bot.edit_message_text(task_info_message, 
-                              chat_id=call.message.chat.id, 
-                              message_id=call.message.message_id, 
-                              parse_mode="HTML")
-
-        bot.register_next_step_handler(call.message, mm_send_final_2, lesson_id, course_id, task_id, call.from_user.id)
-        # new_student_answer_dict[call.message.from_user.id] == [lesson_id, course_id, task_id]
-    else:
+    if not task:
         bot.edit_message_text("❗️ Задача не найдена", 
                               chat_id=call.message.chat.id, 
                               message_id=call.message.message_id)
+        return
 
-last_time_student_answer_dict = {}
-
-def mm_send_final_2(message, lesson_id, course_id, task_id, user_id):
-    log_user_action(
-        message.from_user,
-        "solution.submit_input",
-        f"task_id={task_id}, lesson_id={lesson_id}, course_id={course_id}, content_type={message.content_type}"
+    cancel_solution_submission_session(call.from_user.id)
+    session = start_solution_submission_session(
+        call.from_user.id,
+        call.message.chat.id,
+        task,
+        call.message.message_id,
     )
-    if user_id not in last_time_student_answer_dict:
-        last_time_student_answer_dict[user_id] = time.time()
-    else:
-        if time.time() - last_time_student_answer_dict[user_id] < 10:
-            return
-        last_time_student_answer_dict[user_id] = time.time()
-    if message.content_type == 'text':
-        answer_text = message.text
-        if "/why_only_one_file" in answer_text:
-            why_only_one_file(message)
-            return
-        if answer_text in ["/stop", "Stop", "stop"]:
-            bot.send_message(message.chat.id, "Отменено")
-            return
-        if answer_text == "/start":
-            start(message)
-            return
-        sql_return.new_student_answer(task_id, user_id, answer_text)
-        markup = types.InlineKeyboardMarkup()
-        button1 = types.InlineKeyboardButton("🏠 Главное меню", callback_data=f'mm_main_menu')
-        markup.add(button1)
-        bot.send_message(message.chat.id, "Решение отправлено на проверку", reply_markup=markup)
-        for i in sql_return.developers_list(course_id).split():
-            bot.send_message(i, f"Поступило новое решение для проверки от {sql_return.get_user_name(user_id)[0]} {sql_return.get_user_name(user_id)[1]}")
-        sql_return.log_action(user_id, "send_final", f"{task_id}")
-    elif message.content_type == 'document' or message.content_type == 'photo':
-        answer_text = message.caption
-        if answer_text == "Stop":
-            bot.send_message(message.chat.id, "Отменено")
-            return
-        if not os.path.exists('files'):
-            os.makedirs('files')
-        try:
-            file_id = message.document.file_id if message.content_type == 'document' else message.photo[-1].file_id
-            file_info = bot.get_file(file_id)
-            
-            if file_info.file_size > 15 * 1024 * 1024:
-                bot.reply_to(message, "Файл слишком большой. Максимальный размер - 15 МБ.")
-                return
-            
-            downloaded_file = bot.download_file(file_info.file_path)
-            
-            file_extension = os.path.splitext(file_info.file_path)[1]
-            
-            new_file_name = f'{sql_return.next_name("files")}{file_extension}'
-            save_path = f'files/{new_file_name}'
-            
-            with open(save_path, 'wb') as new_file:
-                new_file.write(downloaded_file)
-            sql_return.save_file(message.content_type, new_file_name, save_path, message.from_user.id)
-
-            bot.reply_to(message, f"Файл сохранен как {new_file_name} (текст сообщения: {message.caption})")
-
-            sql_return.new_student_answer(task_id, user_id, answer_text, new_file_name)
-            markup = types.InlineKeyboardMarkup()
-            button1 = types.InlineKeyboardButton("🏠 Главное меню", callback_data=f'mm_main_menu')
-            markup.add(button1)
-            bot.send_message(message.chat.id, "Решение отправлено на проверку", reply_markup=markup)
-            for i in sql_return.developers_list(course_id).split():
-                bot.send_message(i, f"Поступило новое решение для проверки от {sql_return.get_user_name(user_id)[0]} {sql_return.get_user_name(user_id)[1]}")
-            sql_return.log_action(user_id, "send_final", f"{task_id}")
-        except telebot.apihelper.ApiTelegramException as e:
-            if "file is too big" in str(e):
-                bot.reply_to(message, "Файл слишком большой для загрузки через Telegram API.")
-            else:
-                bot.reply_to(message, "Произошла ошибка при обработке файла.")
-    else:
-        bot.send_message(message.chat.id, "Некорректный тип сообщения")
+    bot.edit_message_text(
+        build_solution_submission_text(task, session),
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=build_solution_submission_markup(),
+    )
 
 def mm_check(call, page=0):
     user = sql_return.find_user_id(call.from_user.id)
@@ -2586,22 +2936,28 @@ def download_solution_file(call, answer_id: int):
         bot.send_message(call.message.chat.id, "У вас нет доступа к файлу этого решения.")
         return
 
-    file_info = get_solution_file_info(solution_data.get("files_id"))
-    if not file_info:
-        bot.send_message(call.message.chat.id, "К этому решению не прикреплён файл.")
+    file_infos = get_solution_file_infos(solution_data)
+    if not file_infos:
+        bot.send_message(call.message.chat.id, "К этому решению не прикреплены файлы.")
         return
 
     try:
-        send_saved_file_to_chat(
-            call.message.chat.id,
-            file_info,
-            caption=f"Файл решения #{answer_id}"
-        )
-        sql_return.log_action(call.from_user.id, "download_solution_file", f"{answer_id}")
+        total_files = len(file_infos)
+        for index, file_info in enumerate(file_infos, start=1):
+            if total_files == 1:
+                caption = f"Файл решения #{answer_id}"
+            else:
+                caption = f"Файл {index}/{total_files} решения #{answer_id}"
+            send_saved_file_to_chat(
+                call.message.chat.id,
+                file_info,
+                caption=caption
+            )
+        sql_return.log_action(call.from_user.id, "download_solution_file", f"{answer_id} files={total_files}")
     except FileNotFoundError:
         bot.send_message(call.message.chat.id, "Файл найден в базе, но отсутствует на диске.")
     except Exception:
-        bot.send_message(call.message.chat.id, "Не удалось отправить файл решения. Попробуйте позже.")
+        bot.send_message(call.message.chat.id, "Не удалось отправить файлы решения. Попробуйте позже.")
 
 def create_task(call):
     bot.edit_message_text(f"""🎓 Вы создаёте задачу.
@@ -2665,21 +3021,16 @@ def help(message):
 @bot.message_handler(commands=["why_only_one_file"])
 def why_only_one_file(message):
     log_user_action(message.from_user, "command.why_only_one_file")
-    text = """Вы можете прикрепить к решению не более одного файла (документ или изображение).
+    text = """Теперь к решению можно прикреплять несколько файлов.
 
-Это ограничение связано с тем, что:
+Как это работает сейчас:
 
-1. Если к сообщению прикреплено более одного файла, Telegram автоматически разделяет его на текст и файлы.
+1. Откройте задачу и начните сдачу решения.
+2. Отправьте текст решения одним или несколькими сообщениями.
+3. Прикрепите нужное количество фото и документов отдельными сообщениями или альбомом.
+4. Когда всё будет загружено, нажмите кнопку отправки решения или отправьте /done.
 
-2. Бот обрабатывает каждый файл как отдельное сообщение, что приводит к ошибкам.
-
-Для устранения этой проблемы потребуется полностью переписать функцию сдачи решений. Мы можем рассмотреть это в будущем, так как сейчас данная проблема не является критичной.
-
-Если вы отправите больше одного файла, бот обработает только первый и откажется принимать решение. Для предотвращения повторной отправки ненужных файлов реализована функция, которая удаляет все ваши сообщения, отправленные менее чем через 10 секунд после предыдущего. Если вы отправляете небольшое количество файлов, это не должно вызвать сложностей.
-
-Если по важной причине вам необходимо прикрепить больше одного файла, обратитесь в техподдержку (aka @agusev2311).
-
-⚠️ Обратите внимание: каждый запрос в техподдержку требует моего времени. Если проблема связана с базой данных (как в данном случае), потребуется остановка работы бота. Если вы будете обращаться в техподдержку без веской причины, например, просто для прикрепления дополнительных файлов к решению, к вам могут быть применены ограничения. Пожалуйста, будьте внимательны, уважайте других пользователей и меня.
+Для отмены используйте /cancel.
 """
     bot.send_message(message.chat.id, text)
 

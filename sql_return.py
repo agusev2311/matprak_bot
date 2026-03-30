@@ -2,6 +2,7 @@ import sqlite3
 import json
 import datetime
 import os
+import re
 from typing import Optional
 
 with open('config.json', 'r') as file:
@@ -12,6 +13,45 @@ def ensure_column(cursor, table_name: str, column_name: str, column_definition: 
     columns = [row[1] for row in cursor.fetchall()]
     if column_name not in columns:
         cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_definition}")
+
+
+def parse_file_ids_field(raw_value) -> list[str]:
+    if not raw_value:
+        return []
+
+    file_ids = []
+    for token in re.split(r"[\s,;]+", str(raw_value).strip()):
+        normalized = os.path.splitext(os.path.basename(token.strip()))[0]
+        if normalized and normalized not in file_ids:
+            file_ids.append(normalized)
+    return file_ids
+
+
+def backfill_student_answer_files(cursor) -> None:
+    cursor.execute(
+        "SELECT id, files_id FROM student_answers WHERE files_id IS NOT NULL AND TRIM(files_id) <> ''"
+    )
+    for answer_id, raw_files_id in cursor.fetchall():
+        legacy_file_ids = parse_file_ids_field(raw_files_id)
+        if not legacy_file_ids:
+            continue
+
+        cursor.execute(
+            "SELECT file_id FROM student_answer_files WHERE answer_id=? ORDER BY sort_order ASC, id ASC",
+            (answer_id,),
+        )
+        existing_file_ids = [row[0] for row in cursor.fetchall()]
+        next_sort_order = len(existing_file_ids)
+
+        for file_id in legacy_file_ids:
+            if file_id in existing_file_ids:
+                continue
+            cursor.execute(
+                "INSERT INTO student_answer_files (answer_id, file_id, sort_order) VALUES (?, ?, ?)",
+                (answer_id, file_id, next_sort_order),
+            )
+            existing_file_ids.append(file_id)
+            next_sort_order += 1
 
 def init_db():
     conn = sqlite3.connect(config["db-name"], check_same_thread=False)
@@ -80,6 +120,21 @@ def init_db():
     ''')
 
     cursor.execute('''
+        CREATE TABLE IF NOT EXISTS student_answer_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            answer_id INTEGER NOT NULL,
+            file_id TEXT NOT NULL,
+            sort_order INTEGER DEFAULT 0,
+            UNIQUE(answer_id, sort_order),
+            FOREIGN KEY(answer_id) REFERENCES student_answers(id) ON DELETE CASCADE
+        );
+    ''')
+    cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_student_answer_files_answer_id
+        ON student_answer_files(answer_id)
+    ''')
+
+    cursor.execute('''
         CREATE TABLE IF NOT EXISTS bug_reports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             message TEXT,
@@ -119,6 +174,7 @@ def init_db():
     # accepted
     # rejected
 
+    backfill_student_answer_files(cursor)
     conn.commit()
     cursor.close()
 
@@ -148,12 +204,20 @@ def save_file(file_type: str, file_name: str, file_path: str, creator_id: int):
         cursor = conn.cursor()
         cursor.execute("INSERT INTO files (file_id, type, file_name, file_path, creator_id) VALUES (?, ?, ?, ?, ?)", (file_id, file_type, file_name, file_path, creator_id))
         conn.commit()
+    return file_id
 
 def get_file(file_id: str):
     with sqlite3.connect(config["files-db-name"]) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM files WHERE file_id=?", (file_id,))
         return cursor.fetchone()
+
+
+def delete_file(file_id: str):
+    with sqlite3.connect(config["files-db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM files WHERE file_id=?", (file_id,))
+        conn.commit()
 
 def lessons_in_class():
     pass
@@ -282,12 +346,23 @@ def toggle_task_status(task_id: int) -> Optional[str]:
     updated = set_task_status(task_id, new_status)
     return new_status if updated else None
 
-def new_student_answer(task_id: int, student_id: int, answer_text: str, files_id: str = None):
+def new_student_answer(task_id: int, student_id: int, answer_text: str, files_id: str = None, file_ids: list[str] | None = None):
+    normalized_file_ids = list(file_ids or parse_file_ids_field(files_id))
+    legacy_files_value = " ".join(normalized_file_ids) if normalized_file_ids else None
     with sqlite3.connect(config["db-name"]) as conn:
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO student_answers (task_id, student_id, answer_text, submission_date, verdict, comment, files_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                       (task_id, student_id, answer_text, str(datetime.datetime.now()), None, None, files_id))  # Здесь кортеж
+        cursor.execute(
+            "INSERT INTO student_answers (task_id, student_id, answer_text, submission_date, verdict, comment, files_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (task_id, student_id, answer_text, str(datetime.datetime.now()), None, None, legacy_files_value),
+        )
+        answer_id = cursor.lastrowid
+        for sort_order, file_id in enumerate(normalized_file_ids):
+            cursor.execute(
+                "INSERT INTO student_answer_files (answer_id, file_id, sort_order) VALUES (?, ?, ?)",
+                (answer_id, file_id, sort_order),
+            )
         conn.commit()
+        return answer_id
 
 def next_name(dir: str) -> str:
     files = os.listdir(dir)
@@ -392,6 +467,33 @@ def get_student_answer_from_id(sa_id):
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM student_answers WHERE id=?", (sa_id,))
         return cursor.fetchone()
+
+
+def get_student_answer_file_ids(answer_id: int, legacy_files_id = None) -> list[str]:
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT file_id FROM student_answer_files WHERE answer_id=? ORDER BY sort_order ASC, id ASC",
+            (answer_id,),
+        )
+        file_ids = [row[0] for row in cursor.fetchall()]
+        if file_ids:
+            return file_ids
+
+        if legacy_files_id is None:
+            cursor.execute("SELECT files_id FROM student_answers WHERE id=?", (answer_id,))
+            row = cursor.fetchone()
+            legacy_files_id = row[0] if row else None
+        return parse_file_ids_field(legacy_files_id)
+
+
+def get_student_answer_files(answer_id: int, legacy_files_id = None) -> list[tuple]:
+    file_infos = []
+    for file_id in get_student_answer_file_ids(answer_id, legacy_files_id):
+        file_info = get_file(file_id)
+        if file_info:
+            file_infos.append(file_info)
+    return file_infos
 
 def check_student_answer(verdict: str, comment: str | None, student_answer_id: int):
     with sqlite3.connect(config["db-name"]) as conn:
@@ -596,6 +698,19 @@ def get_accessible_solutions(user_id):
     conn.close()
     return solutions
 
+
+def enrich_solution_file_metadata(solution_data: dict | None) -> dict | None:
+    if not solution_data:
+        return solution_data
+    file_ids = get_student_answer_file_ids(solution_data["answer_id"], solution_data.get("files_id"))
+    solution_data["attached_file_ids"] = file_ids
+    solution_data["file_count"] = len(file_ids)
+    return solution_data
+
+
+def enrich_solution_list_file_metadata(solutions: list[dict]) -> list[dict]:
+    return [enrich_solution_file_metadata(solution) for solution in solutions]
+
 def get_accessible_solution_details(user_id: int, include_all: bool = False) -> list[dict]:
     with sqlite3.connect(config["db-name"], check_same_thread=False) as conn:
         conn.row_factory = sqlite3.Row
@@ -630,7 +745,7 @@ def get_accessible_solution_details(user_id: int, include_all: bool = False) -> 
 
         if include_all:
             cursor.execute(base_query + " ORDER BY sa.id DESC")
-            return [dict(row) for row in cursor.fetchall()]
+            return enrich_solution_list_file_metadata([dict(row) for row in cursor.fetchall()])
 
         cursor.execute("""
             SELECT course_id FROM courses
@@ -654,7 +769,7 @@ def get_accessible_solution_details(user_id: int, include_all: bool = False) -> 
             params = [user_id]
 
         cursor.execute(query, params)
-        return [dict(row) for row in cursor.fetchall()]
+        return enrich_solution_list_file_metadata([dict(row) for row in cursor.fetchall()])
 
 def get_solution_details(answer_id: int) -> Optional[dict]:
     with sqlite3.connect(config["db-name"], check_same_thread=False) as conn:
@@ -688,7 +803,7 @@ def get_solution_details(answer_id: int) -> Optional[dict]:
             WHERE sa.id = ?
         ''', (answer_id,))
         row = cursor.fetchone()
-        return dict(row) if row else None
+        return enrich_solution_file_metadata(dict(row)) if row else None
 
 def self_reject(sol_id: int):
     conn = sqlite3.connect(config["db-name"])
