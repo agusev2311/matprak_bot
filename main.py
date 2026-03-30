@@ -144,6 +144,7 @@ def can_retry_without_custom_emoji(error: Exception) -> bool:
 _raw_send_message = bot.send_message
 _raw_edit_message_text = bot.edit_message_text
 _raw_send_document = bot.send_document
+_raw_inline_keyboard_button_to_dict = types.InlineKeyboardButton.to_dict
 
 
 def send_message_with_custom_emoji_fallback(chat_id, text, *args, **kwargs):
@@ -151,6 +152,7 @@ def send_message_with_custom_emoji_fallback(chat_id, text, *args, **kwargs):
         return _raw_send_message(chat_id, text, *args, **kwargs)
     except Exception as error:
         if isinstance(text, str) and "<tg-emoji" in text and can_retry_without_custom_emoji(error):
+            log(f"custom_emoji_fallback: send_message chat_id={chat_id} error={error}")
             return _raw_send_message(chat_id, strip_custom_emoji_html(text), *args, **kwargs)
         raise
 
@@ -160,6 +162,7 @@ def edit_message_text_with_custom_emoji_fallback(text, *args, **kwargs):
         return _raw_edit_message_text(text, *args, **kwargs)
     except Exception as error:
         if isinstance(text, str) and "<tg-emoji" in text and can_retry_without_custom_emoji(error):
+            log(f"custom_emoji_fallback: edit_message_text error={error}")
             return _raw_edit_message_text(strip_custom_emoji_html(text), *args, **kwargs)
         raise
 
@@ -172,6 +175,7 @@ def send_document_with_custom_emoji_fallback(chat_id, document, *args, **kwargs)
         if isinstance(caption, str) and "<tg-emoji" in caption and can_retry_without_custom_emoji(error):
             fallback_kwargs = dict(kwargs)
             fallback_kwargs["caption"] = strip_custom_emoji_html(caption)
+            log(f"custom_emoji_fallback: send_document chat_id={chat_id} error={error}")
             return _raw_send_document(chat_id, document, *args, **fallback_kwargs)
         raise
 
@@ -181,15 +185,30 @@ bot.edit_message_text = edit_message_text_with_custom_emoji_fallback
 bot.send_document = send_document_with_custom_emoji_fallback
 
 
+def inline_keyboard_button_to_dict_with_extras(self):
+    json_dict = _raw_inline_keyboard_button_to_dict(self)
+    style = getattr(self, "style", None)
+    icon_custom_emoji_id = getattr(self, "icon_custom_emoji_id", None)
+    if style is not None:
+        json_dict["style"] = style
+    if icon_custom_emoji_id is not None:
+        json_dict["icon_custom_emoji_id"] = icon_custom_emoji_id
+    return json_dict
+
+
+types.InlineKeyboardButton.to_dict = inline_keyboard_button_to_dict_with_extras
+
+
 def ui_button(text: str, callback_data: str | None = None, style: str | None = None, icon_custom_emoji_id: str | None = None, **kwargs):
     button_kwargs = dict(kwargs)
     if callback_data is not None:
         button_kwargs["callback_data"] = callback_data
+    button = types.InlineKeyboardButton(text, **button_kwargs)
     if style is not None:
-        button_kwargs["style"] = style
+        button.style = style
     if icon_custom_emoji_id is not None:
-        button_kwargs["icon_custom_emoji_id"] = icon_custom_emoji_id
-    return types.InlineKeyboardButton(text, **button_kwargs)
+        button.icon_custom_emoji_id = icon_custom_emoji_id
+    return button
 
 
 def verdict_button_custom_emoji_id(verdict) -> str | None:
@@ -786,13 +805,32 @@ def show_solution_details(
     solution_data: dict,
     reply_markup,
     file_button_caption: str | None = None,
-    comment_override: str | None = None
+    comment_override: str | None = None,
+    show_files_preview: bool = False,
 ):
     if not solution_data:
         bot.send_message(call.message.chat.id, "Решение не найдено.")
         return
 
     safe_delete_message(call.message.chat.id, call.message.message_id)
+
+    if show_files_preview:
+        file_infos = get_solution_file_infos(solution_data)
+        missing_files = 0
+        failed_files = 0
+        for file_info in file_infos:
+            try:
+                send_saved_file_to_chat(call.message.chat.id, file_info)
+            except FileNotFoundError:
+                missing_files += 1
+            except Exception:
+                failed_files += 1
+
+        if missing_files:
+            bot.send_message(call.message.chat.id, f"Не удалось открыть {missing_files} файл(ов): они есть в базе, но отсутствуют на диске.")
+        if failed_files:
+            bot.send_message(call.message.chat.id, f"Не удалось открыть ещё {failed_files} файл(ов) решения. Попробуйте кнопку повторной отправки файлов.")
+
     bot.send_message(
         call.message.chat.id,
         build_solution_detail_text(solution_data, comment_override),
@@ -890,7 +928,7 @@ def build_solution_view_markup(solution_data: dict, viewer_id: int, page: int = 
     markup = types.InlineKeyboardMarkup()
     file_count = int(solution_data.get("file_count") or 0)
     if file_count:
-        caption = "📎 Открыть файл решения" if file_count == 1 else f"📎 Открыть файлы решения ({file_count})"
+        caption = "📎 Показать файл ещё раз" if file_count == 1 else f"📎 Показать файлы ещё раз ({file_count})"
         markup.add(ui_button(caption, callback_data=f"download_solution_file_{solution_data['answer_id']}"))
     if int(solution_data["student_id"]) == int(viewer_id) and solution_data["verdict"] is None:
         markup.add(ui_button("💔 Отменить", callback_data=f"self_reject_{solution_data['answer_id']}_{page}", style="danger", icon_custom_emoji_id=CROSS_CUSTOM_EMOJI_ID))
@@ -910,7 +948,7 @@ def build_check_solution_markup(solution_data: dict, check_type: str):
     markup.add(ui_button("✍️ Добавить комментарий", callback_data=f"check-add-comment_{check_type}_{answer_id}", style="primary"))
     file_count = int(solution_data.get("file_count") or 0)
     if file_count:
-        caption = "📎 Открыть файл решения" if file_count == 1 else f"📎 Открыть файлы решения ({file_count})"
+        caption = "📎 Показать файл ещё раз" if file_count == 1 else f"📎 Показать файлы ещё раз ({file_count})"
         markup.add(ui_button(caption, callback_data=f"download_solution_file_{answer_id}"))
     markup.add(ui_button("⬅️ К проверке", callback_data="mm_check_0"))
     return markup
@@ -2236,14 +2274,20 @@ def mm_answers(call, page=0):
     safe_delete_message(call.message.chat.id, call.message.message_id)
     bot.send_message(call.message.chat.id, text, reply_markup=markup)
 
-def solution(call, sol_id, page=0):
+def solution(call, sol_id, page=0, show_files_preview: bool = True):
     solution_data = sql_return.get_solution_details(sol_id)
     if not can_access_solution(call.from_user.id, solution_data):
         bot.send_message(call.message.chat.id, "У вас нет доступа к этому решению.")
         return
 
     markup = build_solution_view_markup(solution_data, call.from_user.id, page)
-    show_solution_details(call, solution_data, markup, file_button_caption=f"Файл решения #{sol_id}")
+    show_solution_details(
+        call,
+        solution_data,
+        markup,
+        file_button_caption=f"Файл решения #{sol_id}",
+        show_files_preview=show_files_preview,
+    )
 
 def self_reject(call, sol_id, page=0, undo=False):
     solution_data = sql_return.get_solution_details(sol_id)
@@ -2254,7 +2298,7 @@ def self_reject(call, sol_id, page=0, undo=False):
         sql_return.undo_self_reject(sol_id)
     else:
         sql_return.self_reject(sol_id)
-    solution(call, sol_id, page)
+    solution(call, sol_id, page, show_files_preview=False)
 
 def check_all(call):
     task_data = sql_return.last_student_answer_all(call.from_user.id)
@@ -2266,7 +2310,7 @@ def check_course(call, course_id):
 
 comment_for_answer_dict = dict([])
 
-def check_task(type: str, call, task_data, comment: str = "None"):
+def check_task(type: str, call, task_data, comment: str = "None", show_files_preview: bool = True):
     if task_data is None:
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="mm_check_0"))
@@ -2295,7 +2339,8 @@ def check_task(type: str, call, task_data, comment: str = "None"):
         solution_data,
         markup,
         file_button_caption=f"Файл решения #{answer_id}",
-        comment_override=comment_to_show
+        comment_override=comment_to_show,
+        show_files_preview=show_files_preview,
     )
 
 def check_add_comment(message, call, type: str, task_id):
@@ -2307,7 +2352,7 @@ def check_add_comment(message, call, type: str, task_id):
     task_data = sql_return.get_student_answer_from_id(task_id)
     comment = message.text
     comment_for_answer_dict[message.from_user.id] = comment
-    check_task(type, call, task_data, comment)
+    check_task(type, call, task_data, comment, show_files_preview=False)
 
 def check_final(call, answer_id: int, verdict: str):
     try:
