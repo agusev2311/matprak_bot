@@ -25,6 +25,7 @@ with open('config.json', 'r') as file:
 
 sql_return.init_db()
 sql_return.init_files_db()
+sql_return.initialize_lesson_notification_baseline()
 
 is_polling = True
 
@@ -32,10 +33,15 @@ bot = telebot.TeleBot(config["tg-token"])
 
 GPT_SQL_ALLOWED_EXTRA_USER_ID = 930442932
 MAX_UPLOAD_SIZE_BYTES = 15 * 1024 * 1024
+try:
+    LESSON_NOTIFICATION_POLL_SECONDS = max(10, int(config.get("lesson_notification_poll_seconds", 30)))
+except Exception:
+    LESSON_NOTIFICATION_POLL_SECONDS = 30
 
 gpt_sql_requests_lock = Lock()
 gpt_sql_requests = {}
 gpt_sql_request_seq = 0
+lesson_notifications_lock = Lock()
 
 TASKS_COLUMN_ALIASES = {
     "text": "description",
@@ -308,6 +314,90 @@ def send_saved_file_to_chat(chat_id: int, file_info, caption: str | None = None)
             if file_name:
                 send_kwargs["visible_file_name"] = file_name
             bot.send_document(chat_id, document, **send_kwargs)
+
+
+def get_notifiable_student_ids(course_id: int) -> list[int]:
+    result = []
+    raw_ids = sql_return.students_list(course_id).split()
+    for student_id in raw_ids:
+        try:
+            student_id_int = int(student_id)
+        except ValueError:
+            continue
+        user = sql_return.find_user_id(student_id_int)
+        if user and user[3] == "approved":
+            result.append(student_id_int)
+    return result
+
+
+def build_lesson_notification_markup(course_id: int, lesson_id: int, has_file: bool):
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("📘 Открыть урок", callback_data=f"lesson_{course_id}_{lesson_id}_0"))
+    if has_file:
+        markup.add(types.InlineKeyboardButton("📎 Получить файл", callback_data=f"download_lesson_file_{course_id}_{lesson_id}"))
+    return markup
+
+
+def send_new_lesson_notifications(lesson_data, source: str = "scanner") -> int:
+    lesson_id = int(lesson_data[0])
+    course_id = int(lesson_data[1])
+    course = sql_return.find_course_id(course_id)
+    if not course:
+        sql_return.mark_lesson_notified(lesson_id, course_id, 0, f"{source}:missing_course")
+        return 0
+
+    lesson_title = str(lesson_data[2])
+    lesson_file_id = get_lesson_file_id(lesson_data)
+    course_title = str(course[1])
+    student_ids = get_notifiable_student_ids(course_id)
+
+    text = (
+        f"📚 В курсе <b>{html.escape(course_title)}</b> появился новый урок.\n\n"
+        f"<b>Урок:</b> {html.escape(lesson_title)}"
+    )
+    if lesson_file_id:
+        text += "\n📎 К уроку прикреплён файл."
+
+    markup = build_lesson_notification_markup(course_id, lesson_id, bool(lesson_file_id))
+    sent_count = 0
+    for student_id in student_ids:
+        try:
+            bot.send_message(student_id, text, parse_mode="HTML", reply_markup=markup)
+            sent_count += 1
+        except Exception as error:
+            log(f"lesson notification failed: lesson_id={lesson_id} student_id={student_id} error={error}")
+
+    sql_return.mark_lesson_notified(lesson_id, course_id, sent_count, source)
+    sql_return.log_action(0, "lesson_notifications_sent", f"{lesson_id} {course_id} {sent_count} {source}")
+    return sent_count
+
+
+def process_pending_lesson_notifications(source: str = "scanner") -> int:
+    if not lesson_notifications_lock.acquire(blocking=False):
+        return 0
+
+    try:
+        pending_lessons = sql_return.get_unnotified_lessons()
+        processed = 0
+        for lesson_data in pending_lessons:
+            send_new_lesson_notifications(lesson_data, source)
+            processed += 1
+        return processed
+    finally:
+        lesson_notifications_lock.release()
+
+
+def lesson_notification_scheduler():
+    while is_polling:
+        try:
+            process_pending_lesson_notifications("background")
+        except Exception as error:
+            log(f"lesson notification scheduler error: {error}")
+
+        slept = 0
+        while is_polling and slept < LESSON_NOTIFICATION_POLL_SECONDS:
+            time.sleep(1)
+            slept += 1
 
 
 def split_sql_statements(sql_text: str) -> list[str]:
@@ -748,6 +838,7 @@ def gpt_sql_accept(call, request_id: int):
 
     sql_return.log_action(call.from_user.id, "gpt_lesson_request_accepted", f"{request_id}")
     bot.send_message(call.message.chat.id, f"✅ SQL из заявки #{request_id} применен к базе.")
+    Thread(target=process_pending_lesson_notifications, args=("gpt_sql_accept",), daemon=True).start()
 
     if request["initiator_id"] != call.from_user.id:
         bot.send_message(request["initiator_id"], f"✅ Админ подтвердил заявку #{request_id}. SQL применен к базе.")
@@ -2064,6 +2155,7 @@ def create_lesson_name(message, editing_message_id, course_id):
     bot.delete_message(message.chat.id, message.message_id)
     sql_return.create_lesson(course_id, name)
     sql_return.log_action(message.from_user.id, "create_lesson", f"{sql_return.last_lesson_id()} {course_id} {name}")
+    Thread(target=process_pending_lesson_notifications, args=("create_lesson",), daemon=True).start()
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("🔙 К списку уроков", callback_data=f"content_{course_id}_0"))
     bot.edit_message_text(f"""✅ Урок "{name}" успешно создан!""", chat_id=message.chat.id, message_id=editing_message_id, reply_markup=markup)
@@ -2815,6 +2907,9 @@ def backup_scheduler():
 # Запуск планировщика в отдельном потоке
 backup_thread = Thread(target=backup_scheduler, daemon=True)
 backup_thread.start()
+
+lesson_notification_thread = Thread(target=lesson_notification_scheduler, daemon=True)
+lesson_notification_thread.start()
 
 backoff_seconds = POLLING_RETRY_SLEEP_SECONDS
 while is_polling:

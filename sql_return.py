@@ -97,6 +97,24 @@ def init_db():
         )
     ''')
 
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS app_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS lesson_notifications (
+            lesson_id INTEGER PRIMARY KEY,
+            course_id INTEGER NOT NULL,
+            notified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            student_count INTEGER DEFAULT 0,
+            source TEXT,
+            FOREIGN KEY(lesson_id) REFERENCES lessons(id)
+        )
+    ''')
+
     # Verdict:
     # accepted
     # rejected
@@ -406,6 +424,46 @@ def log_action(executor_id: int, action: str, info: str):
     with sqlite3.connect(config["db-name"]) as conn:
         cursor = conn.cursor()
         cursor.execute("INSERT INTO logs (executor_id, action, info) VALUES (?, ?, ?)", (executor_id, action, info))
+        conn.commit()
+
+def initialize_lesson_notification_baseline() -> bool:
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM app_meta WHERE key=?", ("lesson_notifications_seeded",))
+        if cursor.fetchone():
+            return False
+
+        cursor.execute('''
+            INSERT OR IGNORE INTO lesson_notifications (lesson_id, course_id, student_count, source)
+            SELECT id, course_id, 0, 'baseline'
+            FROM lessons
+        ''')
+        cursor.execute(
+            "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)",
+            ("lesson_notifications_seeded", str(datetime.datetime.now()))
+        )
+        conn.commit()
+        return True
+
+def get_unnotified_lessons():
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT l.*
+            FROM lessons l
+            LEFT JOIN lesson_notifications ln ON ln.lesson_id = l.id
+            WHERE ln.lesson_id IS NULL
+            ORDER BY l.id ASC
+        ''')
+        return cursor.fetchall()
+
+def mark_lesson_notified(lesson_id: int, course_id: int, student_count: int = 0, source: str = "scanner"):
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT OR REPLACE INTO lesson_notifications (lesson_id, course_id, notified_at, student_count, source)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (lesson_id, course_id, str(datetime.datetime.now()), student_count, source))
         conn.commit()
 
 def last_course_id():
