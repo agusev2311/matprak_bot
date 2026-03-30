@@ -618,13 +618,113 @@ def send_saved_file_to_chat(chat_id: int, file_info, caption: str | None = None)
 
     if file_type == "photo":
         with open(file_path, "rb") as photo:
-            bot.send_photo(chat_id, photo, caption=caption)
+            send_kwargs = {"caption": caption}
+            if caption and "<" in caption and ">" in caption:
+                send_kwargs["parse_mode"] = "HTML"
+            bot.send_photo(chat_id, photo, **send_kwargs)
     else:
         with open(file_path, "rb") as document:
             send_kwargs = {"caption": caption}
+            if caption and "<" in caption and ">" in caption:
+                send_kwargs["parse_mode"] = "HTML"
             if file_name:
                 send_kwargs["visible_file_name"] = file_name
             bot.send_document(chat_id, document, **send_kwargs)
+
+
+def chunk_items(items, chunk_size: int):
+    for start in range(0, len(items), chunk_size):
+        yield items[start:start + chunk_size]
+
+
+def build_solution_media_caption(solution_data: dict, comment_override: str | None = None) -> str:
+    comment = solution_data.get("comment") if comment_override is None else comment_override
+    plain_verdict_labels = {
+        "accept": "Принято",
+        "reject": "Отклонено",
+        "self_reject": "Отменено автором",
+        None: "Ожидает проверки",
+    }
+    lines = [
+        f"<b>Решение #{solution_data['answer_id']}</b>",
+        f"<b>Вердикт:</b> {html.escape(plain_verdict_labels.get(solution_data.get('verdict'), 'Неизвестно'))}",
+        f"<b>Курс:</b> {html.escape(str(solution_data.get('course_name') or 'Неизвестно'))}",
+        f"<b>Урок:</b> {html.escape(str(solution_data.get('lesson_title') or 'Неизвестно'))}",
+        f"<b>Задача #{solution_data['task_id']}:</b> {html.escape(str(solution_data.get('task_title') or 'Без названия'))}",
+    ]
+    if comment:
+        lines.append(f"<b>Комментарий:</b> {html.escape(shorten_text(comment, 180))}")
+    answer_text = str(solution_data.get("answer_text") or "").strip()
+    if answer_text:
+        lines.append(f"<b>Текст решения:</b> {html.escape(shorten_text(answer_text, 220))}")
+    caption = "\n".join(lines)
+    if len(caption) <= 1024:
+        return caption
+    fallback_lines = lines[:5]
+    if comment:
+        fallback_lines.append(f"<b>Комментарий:</b> {html.escape(shorten_text(comment, 100))}")
+    return "\n".join(fallback_lines)[:1024]
+
+
+def send_solution_files_preview(chat_id: int, solution_data: dict, comment_override: str | None = None):
+    file_infos = get_solution_file_infos(solution_data)
+    if not file_infos:
+        return
+
+    file_groups = []
+    seen_types = []
+    grouped_files = {"photo": [], "document": []}
+    for file_info in file_infos:
+        file_type = file_info[2]
+        if file_type not in grouped_files:
+            continue
+        grouped_files[file_type].append(file_info)
+        if file_type not in seen_types:
+            seen_types.append(file_type)
+
+    for file_type in seen_types:
+        for group in chunk_items(grouped_files[file_type], 10):
+            file_groups.append((file_type, group))
+
+    caption_html = build_solution_media_caption(solution_data, comment_override)
+    caption_used = False
+
+    for file_type, group in file_groups:
+        if len(group) == 1:
+            file_info = group[0]
+            send_saved_file_to_chat(
+                chat_id,
+                file_info,
+                caption=caption_html if not caption_used else None,
+            )
+            caption_used = True
+            continue
+
+        media_items = []
+        opened_files = []
+        try:
+            for index, file_info in enumerate(group):
+                file_name = file_info[3]
+                file_path = file_info[4]
+                if not os.path.exists(file_path):
+                    raise FileNotFoundError(file_path)
+                opened_file = open(file_path, "rb")
+                opened_files.append(opened_file)
+                input_file = types.InputFile(opened_file, file_name=file_name or None)
+                caption = caption_html if not caption_used and index == 0 else None
+                parse_mode = "HTML" if caption else None
+                if file_type == "photo":
+                    media_items.append(types.InputMediaPhoto(input_file, caption=caption, parse_mode=parse_mode))
+                else:
+                    media_items.append(types.InputMediaDocument(input_file, caption=caption, parse_mode=parse_mode))
+            bot.send_media_group(chat_id, media_items)
+            caption_used = True
+        finally:
+            for opened_file in opened_files:
+                try:
+                    opened_file.close()
+                except Exception:
+                    pass
 
 
 VERDICT_LABELS = {
@@ -815,21 +915,12 @@ def show_solution_details(
     safe_delete_message(call.message.chat.id, call.message.message_id)
 
     if show_files_preview:
-        file_infos = get_solution_file_infos(solution_data)
-        missing_files = 0
-        failed_files = 0
-        for file_info in file_infos:
-            try:
-                send_saved_file_to_chat(call.message.chat.id, file_info)
-            except FileNotFoundError:
-                missing_files += 1
-            except Exception:
-                failed_files += 1
-
-        if missing_files:
-            bot.send_message(call.message.chat.id, f"Не удалось открыть {missing_files} файл(ов): они есть в базе, но отсутствуют на диске.")
-        if failed_files:
-            bot.send_message(call.message.chat.id, f"Не удалось открыть ещё {failed_files} файл(ов) решения. Попробуйте кнопку повторной отправки файлов.")
+        try:
+            send_solution_files_preview(call.message.chat.id, solution_data, comment_override)
+        except FileNotFoundError:
+            bot.send_message(call.message.chat.id, "Часть файлов решения есть в базе, но отсутствует на диске.")
+        except Exception:
+            bot.send_message(call.message.chat.id, "Не удалось открыть файлы решения как единый пакет. Попробуйте кнопку повторной отправки файлов.")
 
     bot.send_message(
         call.message.chat.id,
@@ -2981,28 +3072,17 @@ def download_solution_file(call, answer_id: int):
         bot.send_message(call.message.chat.id, "У вас нет доступа к файлу этого решения.")
         return
 
-    file_infos = get_solution_file_infos(solution_data)
-    if not file_infos:
+    if not get_solution_file_infos(solution_data):
         bot.send_message(call.message.chat.id, "К этому решению не прикреплены файлы.")
         return
 
     try:
-        total_files = len(file_infos)
-        for index, file_info in enumerate(file_infos, start=1):
-            if total_files == 1:
-                caption = f"Файл решения #{answer_id}"
-            else:
-                caption = f"Файл {index}/{total_files} решения #{answer_id}"
-            send_saved_file_to_chat(
-                call.message.chat.id,
-                file_info,
-                caption=caption
-            )
-        sql_return.log_action(call.from_user.id, "download_solution_file", f"{answer_id} files={total_files}")
+        send_solution_files_preview(call.message.chat.id, solution_data)
+        sql_return.log_action(call.from_user.id, "download_solution_file", f"{answer_id} files={solution_data.get('file_count', 0)}")
     except FileNotFoundError:
         bot.send_message(call.message.chat.id, "Файл найден в базе, но отсутствует на диске.")
     except Exception:
-        bot.send_message(call.message.chat.id, "Не удалось отправить файлы решения. Попробуйте позже.")
+        bot.send_message(call.message.chat.id, "Не удалось отправить файлы решения единым сообщением или альбомом. Попробуйте позже.")
 
 def create_task(call):
     bot.edit_message_text(f"""🎓 Вы создаёте задачу.
