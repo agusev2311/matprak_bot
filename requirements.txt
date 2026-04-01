@@ -5,3 +5,4 @@ gspread
 gspread_formatting
 oauth2client
 pillow
+requests

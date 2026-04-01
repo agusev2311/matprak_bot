@@ -55,148 +55,154 @@ def backfill_student_answer_files(cursor) -> None:
 
 def init_db():
     conn = sqlite3.connect(config["db-name"], check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            first_name TEXT,
-            last_name TEXT,
-            status TEXT
-        )
-    ''')
+    try:
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                first_name TEXT,
+                last_name TEXT,
+                status TEXT
+            )
+        ''')
 
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS lessons (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            course_id INTEGER NOT NULL,
-            title TEXT NOT NULL,
-            status TEXT NOT NULL,
-            open_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            file_id TEXT,
-            FOREIGN KEY(course_id) REFERENCES courses(id)
-        )
-    ''')
-    ensure_column(cursor, "lessons", "file_id", "file_id TEXT")
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS lessons (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                course_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                status TEXT NOT NULL,
+                open_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                file_id TEXT,
+                FOREIGN KEY(course_id) REFERENCES courses(id)
+            )
+        ''')
+        ensure_column(cursor, "lessons", "file_id", "file_id TEXT")
 
-    # Status:
-    # open
-    # arc
-    # dev
+        # Status:
+        # open
+        # arc
+        # dev
 
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS tasks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            lesson_id INTEGER NOT NULL,
-            title TEXT NOT NULL,
-            status TEXT NOT NULL,
-            deadline TIMESTAMP,
-            description TEXT,
-            FOREIGN KEY(lesson_id) REFERENCES lessons(id)
-        )
-    ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lesson_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                status TEXT NOT NULL,
+                deadline TIMESTAMP,
+                description TEXT,
+                FOREIGN KEY(lesson_id) REFERENCES lessons(id)
+            )
+        ''')
 
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS courses (
-            course_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            course_name TEXT,
-            creator_id INTEGER,
-            student_id TEXT,
-            developers TEXT
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS student_answers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            task_id INTEGER NOT NULL,
-            student_id INTEGER NOT NULL,
-            answer_text TEXT,
-            files_id TEXT,
-            submission_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            verdict TEXT,           -- Вердикт преподавателя
-            comment TEXT,           -- Комментарий к вердикту
-            FOREIGN KEY(task_id) REFERENCES tasks(id),
-            FOREIGN KEY(student_id) REFERENCES users(user_id)
-        );
-    ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS courses (
+                course_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                course_name TEXT,
+                creator_id INTEGER,
+                student_id TEXT,
+                developers TEXT
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS student_answers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL,
+                student_id INTEGER NOT NULL,
+                answer_text TEXT,
+                files_id TEXT,
+                submission_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                verdict TEXT,           -- Вердикт преподавателя
+                comment TEXT,           -- Комментарий к вердикту
+                FOREIGN KEY(task_id) REFERENCES tasks(id),
+                FOREIGN KEY(student_id) REFERENCES users(user_id)
+            );
+        ''')
 
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS student_answer_files (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            answer_id INTEGER NOT NULL,
-            file_id TEXT NOT NULL,
-            sort_order INTEGER DEFAULT 0,
-            UNIQUE(answer_id, sort_order),
-            FOREIGN KEY(answer_id) REFERENCES student_answers(id) ON DELETE CASCADE
-        );
-    ''')
-    cursor.execute('''
-        CREATE INDEX IF NOT EXISTS idx_student_answer_files_answer_id
-        ON student_answer_files(answer_id)
-    ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS student_answer_files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                answer_id INTEGER NOT NULL,
+                file_id TEXT NOT NULL,
+                sort_order INTEGER DEFAULT 0,
+                UNIQUE(answer_id, sort_order),
+                FOREIGN KEY(answer_id) REFERENCES student_answers(id) ON DELETE CASCADE
+            );
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_student_answer_files_answer_id
+            ON student_answer_files(answer_id)
+        ''')
 
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS bug_reports (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            message TEXT,
-            time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS bug_reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message TEXT,
+                time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
 
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            executor_id INTEGER,
-            action TEXT,
-            time TIMESTAMP DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now', '+3 hours')),
-            info TEXT
-        )
-    ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                executor_id INTEGER,
+                action TEXT,
+                time TIMESTAMP DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now', '+3 hours')),
+                info TEXT
+            )
+        ''')
 
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS app_meta (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-    ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS app_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        ''')
 
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS lesson_notifications (
-            lesson_id INTEGER PRIMARY KEY,
-            course_id INTEGER NOT NULL,
-            notified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            student_count INTEGER DEFAULT 0,
-            source TEXT,
-            FOREIGN KEY(lesson_id) REFERENCES lessons(id)
-        )
-    ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS lesson_notifications (
+                lesson_id INTEGER PRIMARY KEY,
+                course_id INTEGER NOT NULL,
+                notified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                student_count INTEGER DEFAULT 0,
+                source TEXT,
+                FOREIGN KEY(lesson_id) REFERENCES lessons(id)
+            )
+        ''')
 
-    # Verdict:
-    # accepted
-    # rejected
+        # Verdict:
+        # accepted
+        # rejected
 
-    backfill_student_answer_files(cursor)
-    conn.commit()
-    cursor.close()
+        backfill_student_answer_files(cursor)
+        conn.commit()
+        cursor.close()
+    finally:
+        conn.close()
 
 def init_files_db():
     conn = sqlite3.connect(config["files-db-name"], check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS files (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            file_id TEXT,
-            type TEXT,
-            file_name TEXT,
-            file_path TEXT,
-            creator_id INTEGER,
-            creation_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    # type:
-    # photo
-    # file
-    conn.commit()
-    cursor.close()
+    try:
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_id TEXT,
+                type TEXT,
+                file_name TEXT,
+                file_path TEXT,
+                creator_id INTEGER,
+                creation_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        # type:
+        # photo
+        # file
+        conn.commit()
+        cursor.close()
+    finally:
+        conn.close()
 
 def save_file(file_type: str, file_name: str, file_path: str, creator_id: int):
     file_id = file_path.split("/")[-1].split(".")[0]
@@ -501,20 +507,101 @@ def check_student_answer(verdict: str, comment: str | None, student_answer_id: i
         cursor.execute("UPDATE student_answers SET verdict=? WHERE id=?", (verdict, student_answer_id))
         cursor.execute("UPDATE student_answers SET comment=? WHERE id=?", (comment, student_answer_id))
 
+
+def normalize_lesson_title(title: str) -> str:
+    normalized = " ".join(str(title or "").split()).strip()
+    if not normalized:
+        raise ValueError("Пустое название урока.")
+    return normalized
+
+
+def normalize_lesson_tasks_payload(tasks: list[dict]) -> list[tuple[str, str]]:
+    if not isinstance(tasks, list) or not tasks:
+        raise ValueError("Список задач пуст.")
+
+    normalized_tasks = []
+    seen_titles = set()
+
+    for index, task in enumerate(tasks, start=1):
+        if not isinstance(task, dict):
+            raise ValueError(f"Задача #{index} имеет неверный формат.")
+
+        title = " ".join(str(task.get("title") or "").split()).strip()
+        description = str(task.get("description") or "").strip()
+
+        if not title:
+            raise ValueError(f"У задачи #{index} отсутствует title.")
+        if not description:
+            raise ValueError(f"У задачи {title} отсутствует description.")
+
+        dedupe_key = title.casefold()
+        if dedupe_key in seen_titles:
+            raise ValueError(f"Дублирующаяся задача: {title}")
+
+        seen_titles.add(dedupe_key)
+        normalized_tasks.append((title, description))
+
+    return normalized_tasks
+
 def create_lesson(course_id: int, name: str, file_id: str | None = None):
+    lesson_title = normalize_lesson_title(name)
+    normalized_file_id = str(file_id).strip() if file_id is not None else ""
+    normalized_file_id = normalized_file_id or None
     with sqlite3.connect(config["db-name"]) as conn:
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO lessons (course_id, title, status, file_id) VALUES (?, ?, ?, ?)",
-            (course_id, name, "open", file_id)
+            (course_id, lesson_title, "open", normalized_file_id)
         )
         conn.commit()
+        return cursor.lastrowid
 
 def create_task(lesson_id: int, course_id: int, name: str, description: str):
+    task_title = " ".join(str(name or "").split()).strip()
+    task_description = str(description or "").strip()
+    if not task_title:
+        raise ValueError("Пустое название задачи.")
+    if not task_description:
+        raise ValueError("Пустое описание задачи.")
+
     with sqlite3.connect(config["db-name"]) as conn:
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO tasks (lesson_id, title, status, description) VALUES (?, ?, ?, ?)", (lesson_id, name, "open", description))
+        cursor.execute(
+            "INSERT INTO tasks (lesson_id, title, status, description) VALUES (?, ?, ?, ?)",
+            (lesson_id, task_title, "open", task_description)
+        )
         conn.commit()
+        return cursor.lastrowid
+
+
+def create_lesson_with_tasks(course_id: int, lesson_title: str, tasks: list[dict], file_id: str | None = None) -> tuple[int, list[int]]:
+    normalized_lesson_title = normalize_lesson_title(lesson_title)
+    normalized_tasks = normalize_lesson_tasks_payload(tasks)
+    normalized_file_id = str(file_id).strip() if file_id is not None else ""
+    normalized_file_id = normalized_file_id or None
+
+    with sqlite3.connect(config["db-name"]) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM courses WHERE course_id=?", (course_id,))
+        if not cursor.fetchone():
+            raise ValueError(f"Курс {course_id} не найден.")
+
+        cursor.execute(
+            "INSERT INTO lessons (course_id, title, status, file_id) VALUES (?, ?, ?, ?)",
+            (course_id, normalized_lesson_title, "open", normalized_file_id)
+        )
+        lesson_id = cursor.lastrowid
+
+        task_ids = []
+        for title, description in normalized_tasks:
+            cursor.execute(
+                "INSERT INTO tasks (lesson_id, title, status, description) VALUES (?, ?, ?, ?)",
+                (lesson_id, title, "open", description)
+            )
+            task_ids.append(cursor.lastrowid)
+
+        conn.commit()
+        return lesson_id, task_ids
 
 def bug_report(message: str):
     with sqlite3.connect(config["db-name"]) as conn:

@@ -6,6 +6,7 @@ import datetime
 import html
 import io
 import re
+import sys
 import sql_return
 import sorting_123
 import json
@@ -18,7 +19,42 @@ from collections import Counter
 import zipfile
 import requests
 
+LOGS_DIR = os.path.join(os.getcwd(), "logs")
+SESSION_LOGS_DIR = os.path.join(LOGS_DIR, "sessions")
+POLLING_ERRORS_LOG_PATH = os.path.join(LOGS_DIR, "polling_errors.log")
+os.makedirs(SESSION_LOGS_DIR, exist_ok=True)
+
+
+class TeeStream:
+    def __init__(self, *streams):
+        self.streams = streams
+        self.lock = Lock()
+        self.encoding = getattr(streams[0], "encoding", "utf-8") if streams else "utf-8"
+
+    def write(self, data):
+        with self.lock:
+            for stream in self.streams:
+                stream.write(data)
+                stream.flush()
+        return len(data)
+
+    def flush(self):
+        with self.lock:
+            for stream in self.streams:
+                stream.flush()
+
+    def isatty(self):
+        return any(getattr(stream, "isatty", lambda: False)() for stream in self.streams)
+
+
+SESSION_LOG_STAMP = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+SESSION_LOG_PATH = os.path.join(SESSION_LOGS_DIR, f"console_{SESSION_LOG_STAMP}.log")
+session_log_stream = open(SESSION_LOG_PATH, "a", encoding="utf-8", buffering=1)
+sys.stdout = TeeStream(sys.stdout, session_log_stream)
+sys.stderr = TeeStream(sys.stderr, session_log_stream)
+
 print("main.py started")
+print(f"session log started: {SESSION_LOG_PATH}")
 
 with open('config.json', 'r') as file:
     config = json.load(file)
@@ -57,22 +93,6 @@ broadcast_drafts = {}
 broadcast_draft_seq = 0
 solution_submission_sessions_lock = Lock()
 solution_submission_sessions = {}
-
-TASKS_COLUMN_ALIASES = {
-    "text": "description",
-    "task_text": "description",
-    "problem_text": "description",
-    "number": "title",
-    "task_number": "title",
-    "name": "title",
-}
-
-LESSONS_COLUMN_ALIASES = {
-    "name": "title",
-    "lesson_name": "title",
-    "text": "title",
-    "state": "status",
-}
 
 def get_admin_id() -> int:
     return int(config["admin_id"])
@@ -1129,211 +1149,6 @@ def lesson_notification_scheduler():
             slept += 1
 
 
-def split_sql_statements(sql_text: str) -> list[str]:
-    statements = []
-    current = []
-    in_single_quote = False
-    in_double_quote = False
-    index = 0
-
-    while index < len(sql_text):
-        char = sql_text[index]
-
-        if char == "'" and not in_double_quote:
-            if in_single_quote and index + 1 < len(sql_text) and sql_text[index + 1] == "'":
-                current.append(char)
-                current.append(sql_text[index + 1])
-                index += 2
-                continue
-            in_single_quote = not in_single_quote
-        elif char == '"' and not in_single_quote:
-            in_double_quote = not in_double_quote
-
-        if char == ";" and not in_single_quote and not in_double_quote:
-            statement = "".join(current).strip()
-            if statement:
-                statements.append(statement)
-            current = []
-        else:
-            current.append(char)
-
-        index += 1
-
-    tail = "".join(current).strip()
-    if tail:
-        statements.append(tail)
-
-    return statements
-
-
-def split_sql_csv(items_text: str) -> list[str]:
-    items = []
-    current = []
-    depth = 0
-    in_single_quote = False
-    in_double_quote = False
-    index = 0
-
-    while index < len(items_text):
-        char = items_text[index]
-
-        if char == "'" and not in_double_quote:
-            if in_single_quote and index + 1 < len(items_text) and items_text[index + 1] == "'":
-                current.append(char)
-                current.append(items_text[index + 1])
-                index += 2
-                continue
-            in_single_quote = not in_single_quote
-        elif char == '"' and not in_single_quote:
-            in_double_quote = not in_double_quote
-        elif char == "(" and not in_single_quote and not in_double_quote:
-            depth += 1
-        elif char == ")" and not in_single_quote and not in_double_quote and depth > 0:
-            depth -= 1
-
-        if char == "," and depth == 0 and not in_single_quote and not in_double_quote:
-            item = "".join(current).strip()
-            if item:
-                items.append(item)
-            current = []
-        else:
-            current.append(char)
-
-        index += 1
-
-    tail = "".join(current).strip()
-    if tail:
-        items.append(tail)
-
-    return items
-
-
-def normalize_identifier(identifier: str) -> str:
-    return identifier.strip().strip('`"[]').lower()
-
-
-def normalize_lessons_insert_statement(statement: str) -> str:
-    match = re.match(
-        r"^\s*INSERT\s+INTO\s+lessons\s*\((.*?)\)\s*VALUES\s*\((.*)\)\s*$",
-        statement,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    if not match:
-        return statement
-
-    columns = split_sql_csv(match.group(1))
-    values = split_sql_csv(match.group(2))
-
-    if len(columns) != len(values):
-        raise ValueError("В INSERT INTO lessons количество колонок и значений не совпадает.")
-
-    mapped_values = {}
-    for raw_column, value in zip(columns, values):
-        column = normalize_identifier(raw_column)
-        normalized_column = LESSONS_COLUMN_ALIASES.get(column, column)
-        if normalized_column not in {"id", "course_id", "title", "status", "open_date"}:
-            raise ValueError(f"Недопустимая колонка lessons: {raw_column}")
-        if normalized_column not in mapped_values:
-            mapped_values[normalized_column] = value
-
-    if "course_id" not in mapped_values:
-        raise ValueError("В INSERT INTO lessons отсутствует course_id.")
-    if "title" not in mapped_values:
-        mapped_values["title"] = "'Новый урок'"
-    if "status" not in mapped_values:
-        mapped_values["status"] = "'open'"
-
-    ordered_columns = ["id", "course_id", "title", "status", "open_date"]
-    final_columns = [col for col in ordered_columns if col in mapped_values]
-    final_values = [mapped_values[col] for col in final_columns]
-    return f"INSERT INTO lessons ({', '.join(final_columns)}) VALUES ({', '.join(final_values)})"
-
-
-def normalize_tasks_insert_statement(statement: str, default_title_index: int) -> tuple[str, int]:
-    match = re.match(
-        r"^\s*INSERT\s+INTO\s+tasks\s*\((.*?)\)\s*VALUES\s*\((.*)\)\s*$",
-        statement,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    if not match:
-        return statement, default_title_index
-
-    columns = split_sql_csv(match.group(1))
-    values = split_sql_csv(match.group(2))
-
-    if len(columns) != len(values):
-        raise ValueError("В INSERT INTO tasks количество колонок и значений не совпадает.")
-
-    mapped_values = {}
-    for raw_column, value in zip(columns, values):
-        column = normalize_identifier(raw_column)
-        normalized_column = TASKS_COLUMN_ALIASES.get(column, column)
-
-        if normalized_column not in {"id", "lesson_id", "title", "status", "deadline", "description"}:
-            raise ValueError(f"Недопустимая колонка tasks: {raw_column}")
-
-        if normalized_column not in mapped_values:
-            mapped_values[normalized_column] = value
-
-    if "lesson_id" not in mapped_values:
-        raise ValueError("В INSERT INTO tasks отсутствует lesson_id.")
-    if "title" not in mapped_values:
-        mapped_values["title"] = f"'Задача {default_title_index}'"
-        default_title_index += 1
-    if "status" not in mapped_values:
-        mapped_values["status"] = "'open'"
-    if "description" not in mapped_values:
-        mapped_values["description"] = "NULL"
-
-    ordered_columns = ["id", "lesson_id", "title", "status", "deadline", "description"]
-    final_columns = [col for col in ordered_columns if col in mapped_values]
-    final_values = [mapped_values[col] for col in final_columns]
-    statement_sql = f"INSERT INTO tasks ({', '.join(final_columns)}) VALUES ({', '.join(final_values)})"
-    return statement_sql, default_title_index
-
-
-def normalize_lesson_sql(sql_text: str) -> str:
-    if not sql_text or not sql_text.strip():
-        raise ValueError("Пустой SQL.")
-
-    statements = split_sql_statements(sql_text)
-    if not statements:
-        raise ValueError("SQL не содержит команд.")
-
-    normalized = []
-    lessons_count = 0
-    tasks_count = 0
-    default_title_index = 1
-
-    for statement in statements:
-        compact = statement.strip()
-        if not compact:
-            continue
-
-        if re.match(r"^\s*INSERT\s+INTO\s+lessons\b", compact, flags=re.IGNORECASE):
-            normalized.append(normalize_lessons_insert_statement(compact))
-            lessons_count += 1
-            continue
-
-        if re.match(r"^\s*INSERT\s+INTO\s+tasks\b", compact, flags=re.IGNORECASE):
-            statement_sql, default_title_index = normalize_tasks_insert_statement(compact, default_title_index)
-            normalized.append(statement_sql)
-            tasks_count += 1
-            continue
-
-        if re.match(r"^\s*(BEGIN|COMMIT|END|ROLLBACK)\b", compact, flags=re.IGNORECASE):
-            continue
-
-        raise ValueError(f"Недопустимая SQL-команда: {compact[:80]}")
-
-    if lessons_count == 0:
-        raise ValueError("В SQL нет INSERT INTO lessons.")
-    if tasks_count == 0:
-        raise ValueError("В SQL нет INSERT INTO tasks.")
-
-    return ";\n\n".join(normalized) + ";"
-
-
 def get_gpt_sql_review_markup(request_id: int):
     markup = types.InlineKeyboardMarkup()
     markup.row(
@@ -1342,6 +1157,23 @@ def get_gpt_sql_review_markup(request_id: int):
     )
     markup.add(ui_button("Отправить в ChatGPT повторно", callback_data=f"gptsql_retry_{request_id}", style="primary", icon_custom_emoji_id=CHATGPT_CUSTOM_EMOJI_ID))
     return markup
+
+
+def format_sql_preview(sql_text: str, max_lines: int = 28, max_line_len: int = 180) -> str:
+    preview_lines = []
+    lines = str(sql_text or "").splitlines()
+
+    for line in lines[:max_lines]:
+        if len(line) > max_line_len:
+            preview_lines.append(line[:max_line_len - 3] + "...")
+        else:
+            preview_lines.append(line)
+
+    remaining = len(lines) - min(len(lines), max_lines)
+    if remaining > 0:
+        preview_lines.append(f"-- ... и ещё {remaining} строк(и)")
+
+    return "\n".join(preview_lines).strip() or "-- пустой SQL --"
 
 
 def send_gpt_sql_for_review(request_id: int, admin_feedback: str | None = None):
@@ -1373,27 +1205,23 @@ def send_gpt_sql_for_review(request_id: int, admin_feedback: str | None = None):
     except Exception as error:
         bot.send_message(admin_id, f"⚠️ Не удалось приложить файл к заявке #{request_id}: {error}")
 
-    sql_text = request.get("sql", "").strip()
+    sql_text = request.get("sql")
     if not sql_text:
-        bot.send_message(admin_id, f"⚠️ У заявки #{request_id} пустой SQL.")
+        bot.send_message(admin_id, f"⚠️ У заявки #{request_id} отсутствует SQL.")
         return
 
-    truncated = False
-    sql_for_message = sql_text
-    if len(sql_for_message) > 3000:
-        truncated = True
-        sql_for_message = sql_for_message[:3000] + "\n-- ...обрезано..."
-
-    review_title = f"Проверка SQL для заявки #{request_id}\nКурс: {course_title}"
+    review_title = f"<b>Проверка SQL для заявки #{request_id}</b>\n<b>Курс:</b> {html.escape(course_title)}\n<b>Отправил:</b> {html.escape(initiator_text)}"
     if admin_feedback:
-        review_title += f"\nКомментарий для исправления: {html.escape(admin_feedback)}"
+        review_title += f"\n<b>Комментарий для исправления:</b> {html.escape(admin_feedback)}"
 
-    review_text = f"{review_title}\n\n<pre>{html.escape(sql_for_message)}</pre>"
-    if truncated:
+    preview_text = format_sql_preview(sql_text)
+    review_text = f"{review_title}\n\n<pre>{html.escape(preview_text)}</pre>"
+
+    if len(review_text) > 3700 or sql_text.count("\n") > 30:
         sql_file = io.BytesIO(sql_text.encode("utf-8"))
-        sql_file.name = f"gpt_request_{request_id}.sql"
+        sql_file.name = f"gpt_lesson_request_{request_id}.sql"
         bot.send_document(admin_id, sql_file, caption=f"Полный SQL для заявки #{request_id}")
-        review_text += "\n\nПолный SQL отправлен отдельным файлом."
+        review_text = f"{review_title}\n\n<pre>{html.escape(format_sql_preview(sql_text, max_lines=16, max_line_len=140))}</pre>\n\nПолный SQL отправлен отдельным `.sql`-файлом."
 
     bot.send_message(
         admin_id,
@@ -1411,23 +1239,22 @@ def run_gpt_sql_generation(request_id: int, admin_feedback: str | None = None):
         request["status"] = "processing"
         course_id = request["course_id"]
         file_path = request["file_path"]
-        previous_sql = request.get("sql", "")
+        previous_sql = request.get("sql")
         initiator_id = request["initiator_id"]
 
     try:
         if admin_feedback:
-            sql_text = parsing_gpt.fix_lesson_sql(
+            sql_text, sql_payload = parsing_gpt.fix_lesson_sql(
                 lesson_file_path=file_path,
                 course_id=course_id,
-                previous_sql=previous_sql,
+                previous_sql=previous_sql or "",
                 admin_feedback=admin_feedback,
             )
         else:
-            sql_text = parsing_gpt.generate_lesson_sql(
+            sql_text, sql_payload = parsing_gpt.generate_lesson_sql(
                 lesson_file_path=file_path,
                 course_id=course_id,
             )
-        sql_text = normalize_lesson_sql(sql_text)
     except Exception as error:
         with gpt_sql_requests_lock:
             request = gpt_sql_requests.get(request_id)
@@ -1437,13 +1264,13 @@ def run_gpt_sql_generation(request_id: int, admin_feedback: str | None = None):
         error_text = f"{type(error).__name__}: {error}"
         bot.send_message(
             initiator_id,
-            f"{CROSS_HTML} Не удалось получить SQL от ChatGPT: {html.escape(error_text)}",
+            f"{CROSS_HTML} Не удалось подготовить SQL от ChatGPT: {html.escape(error_text)}",
             parse_mode="HTML"
         )
         if initiator_id != get_admin_id():
             bot.send_message(
                 get_admin_id(),
-                f"{CROSS_HTML} Ошибка ChatGPT в заявке #{request_id}: {html.escape(error_text)}",
+                f"{CROSS_HTML} Ошибка ChatGPT/SQL в заявке #{request_id}: {html.escape(error_text)}",
                 parse_mode="HTML"
             )
         return
@@ -1454,6 +1281,7 @@ def run_gpt_sql_generation(request_id: int, admin_feedback: str | None = None):
             return
         request["status"] = "awaiting_admin"
         request["sql"] = sql_text
+        request["sql_payload"] = sql_payload
         if admin_feedback:
             request["last_feedback"] = admin_feedback
 
@@ -1528,6 +1356,7 @@ def gpt_add_lesson_receive_file(message, course_id: int):
             "stored_file_name": file_data["stored_file_name"],
             "original_file_name": file_data["original_file_name"],
             "sql": "",
+            "sql_payload": None,
             "status": "queued",
             "created_at": time.time(),
         }
@@ -1548,7 +1377,7 @@ def gpt_add_lesson_receive_file(message, course_id: int):
 
 def gpt_sql_accept(call, request_id: int):
     if call.from_user.id != get_admin_id():
-        bot.send_message(call.message.chat.id, "Только админ может подтверждать SQL.")
+        bot.send_message(call.message.chat.id, "Только админ может подтверждать такие заявки.")
         return
 
     with gpt_sql_requests_lock:
@@ -1557,21 +1386,18 @@ def gpt_sql_accept(call, request_id: int):
         bot.send_message(call.message.chat.id, f"Заявка #{request_id} уже обработана или не найдена.")
         return
 
-    sql_text = request.get("sql", "").strip()
-    if not sql_text:
-        bot.send_message(call.message.chat.id, f"В заявке #{request_id} нет SQL для выполнения.")
+    sql_text = request.get("sql")
+    sql_payload = request.get("sql_payload")
+    if not sql_text or not sql_payload:
+        bot.send_message(call.message.chat.id, f"В заявке #{request_id} нет SQL для применения.")
         return
 
     try:
-        sql_to_execute = normalize_lesson_sql(sql_text)
-        if sql_to_execute != sql_text:
-            with gpt_sql_requests_lock:
-                if request_id in gpt_sql_requests:
-                    gpt_sql_requests[request_id]["sql"] = sql_to_execute
-
-        with sqlite3.connect(config["db-name"]) as conn:
-            conn.executescript(sql_to_execute)
-            conn.commit()
+        lesson_id, task_ids = sql_return.create_lesson_with_tasks(
+            request["course_id"],
+            sql_payload["lesson_title"],
+            sql_payload["tasks"],
+        )
     except Exception as error:
         bot.send_message(
             call.message.chat.id,
@@ -1583,10 +1409,14 @@ def gpt_sql_accept(call, request_id: int):
     with gpt_sql_requests_lock:
         gpt_sql_requests.pop(request_id, None)
 
-    sql_return.log_action(call.from_user.id, "gpt_lesson_request_accepted", f"{request_id}")
+    sql_return.log_action(
+        call.from_user.id,
+        "gpt_lesson_request_accepted",
+        f"{request_id} lesson_id={lesson_id} tasks={len(task_ids)}"
+    )
     bot.send_message(
         call.message.chat.id,
-        f"{CHECK_HTML} SQL из заявки #{request_id} применен к базе.",
+        f"{CHECK_HTML} SQL из заявки #{request_id} применён.\nУрок ID: {lesson_id}\nЗадач добавлено: {len(task_ids)}",
         parse_mode="HTML"
     )
     Thread(target=process_pending_lesson_notifications, args=("gpt_sql_accept",), daemon=True).start()
@@ -1594,14 +1424,14 @@ def gpt_sql_accept(call, request_id: int):
     if request["initiator_id"] != call.from_user.id:
         bot.send_message(
             request["initiator_id"],
-            f"{CHECK_HTML} Админ подтвердил заявку #{request_id}. SQL применен к базе.",
+            f"{CHECK_HTML} Админ подтвердил заявку #{request_id}. SQL применён, урок добавлен в базу.",
             parse_mode="HTML"
         )
 
 
 def gpt_sql_reject(call, request_id: int):
     if call.from_user.id != get_admin_id():
-        bot.send_message(call.message.chat.id, "Только админ может отклонять SQL.")
+        bot.send_message(call.message.chat.id, "Только админ может отклонять такие заявки.")
         return
 
     with gpt_sql_requests_lock:
@@ -1624,7 +1454,7 @@ def gpt_sql_reject(call, request_id: int):
 
 def gpt_sql_retry(call, request_id: int):
     if call.from_user.id != get_admin_id():
-        bot.send_message(call.message.chat.id, "Только админ может отправлять SQL на доработку.")
+        bot.send_message(call.message.chat.id, "Только админ может отправлять такие заявки на доработку.")
         return
 
     with gpt_sql_requests_lock:
@@ -1649,7 +1479,7 @@ def gpt_sql_retry_feedback(message, request_id: int):
         f"request_id={request_id}, text={message.text or ''}"
     )
     if message.from_user.id != get_admin_id():
-        bot.send_message(message.chat.id, "Только админ может отправлять SQL на доработку.")
+        bot.send_message(message.chat.id, "Только админ может отправлять такие заявки на доработку.")
         return
 
     feedback = (message.text or "").strip()
@@ -3598,7 +3428,8 @@ def record_error(signature: str) -> None:
 
 def append_error_log(line: str) -> None:
     try:
-        with open("polling_errors.log", "a", encoding="utf-8") as f:
+        os.makedirs(LOGS_DIR, exist_ok=True)
+        with open(POLLING_ERRORS_LOG_PATH, "a", encoding="utf-8") as f:
             f.write(line + "\n")
     except Exception:
         pass
@@ -3820,6 +3651,130 @@ def backup_make_files_splits(max_part_bytes: int = MAX_PART_BYTES):
 
     return parts, added
 
+
+def backup_make_logs_zip_single(max_bytes: int):
+    if not os.path.isdir(LOGS_DIR):
+        log("backup: folder 'logs' not found, skipping logs backup")
+        return None, 0, 0
+
+    base_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    archive_name = f"backup_logs_{base_date}.zip"
+    added = 0
+
+    with zipfile.ZipFile(archive_name, "w", zipfile.ZIP_DEFLATED, compresslevel=ZIP_COMPRESSLEVEL) as zipf:
+        for root, dirs, files in os.walk(LOGS_DIR):
+            for filename in files:
+                path = os.path.join(root, filename)
+                try:
+                    os.path.getsize(path)
+                except OSError as e:
+                    log(f"backup: skip unreadable log {path}: {e!r}")
+                    continue
+                try:
+                    arcname = os.path.relpath(path, start=os.getcwd())
+                    zipf.write(path, arcname=arcname)
+                    added += 1
+                except Exception as e:
+                    log(f"backup: failed to add log {path}: {e!r}")
+
+    try:
+        size = os.path.getsize(archive_name)
+    except OSError:
+        size = 0
+    log(f"backup: LOGS ZIP READY name={archive_name} files={added} size={size} bytes")
+
+    if size <= max_bytes:
+        return archive_name, added, size
+
+    log(f"backup: LOGS ZIP too large ({size} bytes), will split")
+    try:
+        os.remove(archive_name)
+    except Exception:
+        pass
+    return None, added, size
+
+
+def backup_make_logs_splits(max_part_bytes: int = MAX_PART_BYTES):
+    base_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    parts = []
+    added = 0
+    part_idx = 1
+
+    zipf = None
+    archive_name = None
+    current_size = 0
+
+    def new_zip():
+        nonlocal part_idx, archive_name, zipf, current_size
+        if zipf is not None:
+            zipf.close()
+        archive_name = f"backup_logs_{base_date}_part{part_idx}.zip"
+        zipf = zipfile.ZipFile(archive_name, "w", zipfile.ZIP_DEFLATED, compresslevel=ZIP_COMPRESSLEVEL)
+        parts.append(archive_name)
+        current_size = 0
+        log(f"backup: opened {archive_name}")
+        part_idx += 1
+
+    if not os.path.isdir(LOGS_DIR):
+        log("backup: folder 'logs' not found, skipping logs backup")
+        return [], 0
+
+    new_zip()
+
+    for root, dirs, files in os.walk(LOGS_DIR):
+        for filename in files:
+            path = os.path.join(root, filename)
+
+            try:
+                file_size = os.path.getsize(path)
+            except OSError as e:
+                log(f"backup: skip unreadable log {path}: {e!r}")
+                continue
+
+            if file_size > max_part_bytes:
+                new_zip()
+                try:
+                    arcname = os.path.relpath(path, start=os.getcwd())
+                    zipf.write(path, arcname=arcname)
+                    added += 1
+                    log(f"backup: added HUGE log {path} size={file_size} bytes")
+                except Exception as e:
+                    log(f"backup: failed to add HUGE log {path}: {e!r}")
+                new_zip()
+                continue
+
+            if current_size >= max_part_bytes:
+                new_zip()
+
+            try:
+                arcname = os.path.relpath(path, start=os.getcwd())
+                zipf.write(path, arcname=arcname)
+                try:
+                    zipf.fp.flush()
+                except Exception:
+                    pass
+                try:
+                    current_size = zipf.fp.tell()
+                except Exception:
+                    try:
+                        current_size = os.path.getsize(archive_name)
+                    except Exception:
+                        current_size += file_size
+                added += 1
+            except Exception as e:
+                log(f"backup: failed to add log {path}: {e!r}")
+
+    if zipf is not None:
+        zipf.close()
+
+    for part in parts:
+        try:
+            log(f"backup: LOG PART READY name={part} size={os.path.getsize(part)} bytes")
+        except OSError:
+            pass
+
+    return parts, added
+
 def backup_cleanup(paths):
     for p in paths:
         try:
@@ -3833,6 +3788,7 @@ def backup_databases_and_files_split():
     Делает:
     1) zip БД -> отправляет
     2) zip-части files/ -> отправляет по одной (если есть)
+    3) zip-части logs/ -> отправляет по одной (если есть)
     """
     created = []
     try:
@@ -3865,6 +3821,28 @@ def backup_databases_and_files_split():
                     log(f"backup: SENT {part} ({i}/{total_parts})")
             else:
                 log("backup: no files parts to send")
+
+        # 3) logs/
+        logs_zip, added_logs, size = backup_make_logs_zip_single(MAX_PART_BYTES)
+        if logs_zip:
+            created.append(logs_zip)
+            caption = f"Backup logs {CHECK_HTML}\nFiles: {added_logs}\nSize: {size} bytes"
+            send_file_to_admin(logs_zip, caption=caption)
+            log(f"backup: SENT {logs_zip}")
+        else:
+            log_parts, added_logs = backup_make_logs_splits(MAX_PART_BYTES)
+            created.extend(log_parts)
+
+            if log_parts:
+                total_parts = len(log_parts)
+                log(f"backup: sending {total_parts} log parts, files_count={added_logs}")
+                for i, part in enumerate(log_parts, 1):
+                    size = os.path.getsize(part)
+                    caption = f"Backup logs {CHECK_HTML} ({i}/{total_parts})\nFiles: {added_logs}\nSize: {size} bytes"
+                    send_file_to_admin(part, caption=caption)
+                    log(f"backup: SENT {part} ({i}/{total_parts})")
+            else:
+                log("backup: no logs parts to send")
 
         backup_cleanup(created)
         log("backup: DONE")

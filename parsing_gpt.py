@@ -2,17 +2,31 @@ import base64
 import json
 import os
 import re
-import tempfile
-import zipfile
 from pathlib import Path
 
-import openai
+import requests
 
+OPENAI_API_BASE = "https://api.openai.com/v1"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 PDF_EXTENSION = ".pdf"
-MAX_SQL_RETRY_FOR_MISSING = 2
-MISSING_TASK_FALLBACK_TEXT = "Текст задачи не распознан полностью. Проверьте и исправьте вручную."
 DEFAULT_OPENAI_MODEL = "gpt-4.1"
+REQUEST_TIMEOUT_SECONDS = 300
+
+TASKS_COLUMN_ALIASES = {
+    "text": "description",
+    "task_text": "description",
+    "problem_text": "description",
+    "number": "title",
+    "task_number": "title",
+    "name": "title",
+}
+
+LESSONS_COLUMN_ALIASES = {
+    "name": "title",
+    "lesson_name": "title",
+    "text": "title",
+    "state": "status",
+}
 
 
 def load_config():
@@ -21,95 +35,116 @@ def load_config():
 
 
 def _pick_model(config: dict, specific_key: str) -> str:
-    model = config.get(specific_key) or config.get("openai-model") or DEFAULT_OPENAI_MODEL
-    model = str(model).strip()
-    if not model:
-        return DEFAULT_OPENAI_MODEL
-    return model
-
-
-def _zip_db(db_path: str) -> str:
-    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as temp_file:
-        zip_path = temp_file.name
-
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zip_file:
-        zip_file.write(db_path, arcname=os.path.basename(db_path))
-
-    return zip_path
+    candidates = [
+        config.get(specific_key),
+        config.get("openai-model-sql"),
+        config.get("openai-model-lesson"),
+        config.get("openai-model"),
+        DEFAULT_OPENAI_MODEL,
+    ]
+    for candidate in candidates:
+        model = str(candidate or "").strip()
+        if model:
+            return model
+    return DEFAULT_OPENAI_MODEL
 
 
 def _load_image_data_url(image_path: str) -> str:
     with open(image_path, "rb") as image_file:
         encoded = base64.b64encode(image_file.read()).decode("ascii")
 
-    ext = Path(image_path).suffix.lower()
-    if ext in {".jpg", ".jpeg"}:
+    extension = Path(image_path).suffix.lower()
+    if extension in {".jpg", ".jpeg"}:
         mime = "image/jpeg"
-    elif ext == ".png":
+    elif extension == ".png":
         mime = "image/png"
-    elif ext == ".webp":
+    elif extension == ".webp":
         mime = "image/webp"
     else:
-        raise ValueError(f"Неподдерживаемый формат изображения: {ext}")
+        raise ValueError(f"Неподдерживаемый формат изображения: {extension}")
 
     return f"data:{mime};base64,{encoded}"
 
 
-def _strip_markdown_fences(output_text: str) -> str:
-    text = (output_text or "").strip()
-    if not text.startswith("```"):
-        return text
-
-    chunks = text.split("```")
-    for chunk in chunks:
-        candidate = chunk.strip()
-        if not candidate:
-            continue
-
-        if "\n" in candidate:
-            lines = candidate.splitlines()
-            first_line = lines[0].strip().lower()
-            if first_line in {"sql", "json", "text", "txt"}:
-                candidate = "\n".join(lines[1:]).strip()
-
-        return candidate.strip()
-
-    return text
+def _openai_headers(api_key: str) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {api_key}",
+    }
 
 
-def _normalize_task_label(label: str) -> str:
-    cleaned = (label or "").strip().lower()
-    cleaned = cleaned.replace("−", "-")
-    cleaned = re.sub(r"\s+", "", cleaned)
-    cleaned = re.sub(r"^[\(\[]+", "", cleaned)
-    cleaned = re.sub(r"[\)\].,:;]+$", "", cleaned)
-    cleaned = cleaned.replace("-", "")
+def _extract_response_text(response_json: dict) -> str:
+    output_text = str(response_json.get("output_text") or "").strip()
+    if output_text:
+        return output_text
 
-    # Поддерживаем форматы:
-    # 1, 1*, 2a, 2а, 2a*, 2а*, 2*a, 2*а
-    match = re.fullmatch(r"(\d+)(\*)?([a-zа-яё])?(\*)?", cleaned)
-    if not match:
+    parts = []
+    for output_item in response_json.get("output", []):
+        for content_item in output_item.get("content", []):
+            if content_item.get("type") == "output_text":
+                text = str(content_item.get("text") or "").strip()
+                if text:
+                    parts.append(text)
+
+    return "\n".join(parts).strip()
+
+
+def _upload_user_file(api_key: str, file_path: str) -> str:
+    file_name = os.path.basename(file_path)
+    with open(file_path, "rb") as source_file:
+        response = requests.post(
+            f"{OPENAI_API_BASE}/files",
+            headers=_openai_headers(api_key),
+            data={"purpose": "user_data"},
+            files={"file": (file_name, source_file)},
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as error:
+        raise RuntimeError(f"Не удалось загрузить файл в OpenAI: {response.text}") from error
+
+    return response.json()["id"]
+
+
+def _delete_uploaded_file(api_key: str, file_id: str) -> None:
+    try:
+        requests.delete(
+            f"{OPENAI_API_BASE}/files/{file_id}",
+            headers=_openai_headers(api_key),
+            timeout=60,
+        )
+    except Exception:
+        pass
+
+
+def _build_lesson_content(api_key: str, lesson_file_path: str):
+    extension = Path(lesson_file_path).suffix.lower()
+
+    if extension in IMAGE_EXTENSIONS:
+        return [{"type": "input_image", "image_url": _load_image_data_url(lesson_file_path)}], None
+
+    if extension == PDF_EXTENSION:
+        uploaded_file_id = _upload_user_file(api_key, lesson_file_path)
+        return [{"type": "input_file", "file_id": uploaded_file_id}], uploaded_file_id
+
+    raise ValueError("Поддерживаются только фото (jpg/jpeg/png/webp) и PDF.")
+
+
+def _extract_sql_code(text: str) -> str:
+    content = str(text or "").strip()
+    if not content:
         return ""
 
-    number = match.group(1)
-    letter = match.group(3) or ""
-    has_star = bool(match.group(2) or match.group(4))
-    star = "*" if has_star else ""
-    return f"{number}{letter}{star}"
+    fenced_match = re.search(r"```(?:sql)?\s*(.*?)```", content, flags=re.IGNORECASE | re.DOTALL)
+    if fenced_match:
+        content = fenced_match.group(1).strip()
+
+    return content.strip()
 
 
-def _deduplicate_labels(labels: list[str]) -> list[str]:
-    result = []
-    seen = set()
-
-    for label in labels:
-        normalized = _normalize_task_label(label)
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        result.append(normalized)
-
-    return result
+def _quote_sql_string(value: str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
 
 
 def _split_sql_statements(sql_text: str) -> list[str]:
@@ -191,476 +226,371 @@ def _split_sql_csv(items_text: str) -> list[str]:
     return items
 
 
-def _parse_sql_literal(value: str) -> str:
-    value = (value or "").strip()
+def _split_sql_value_rows(values_text: str) -> list[str]:
+    rows = []
+    current = []
+    depth = 0
+    in_single_quote = False
+    in_double_quote = False
 
-    if len(value) >= 2 and value[0] == "'" and value[-1] == "'":
-        return value[1:-1].replace("''", "'").strip()
+    text = values_text.strip()
+    index = 0
+    while index < len(text):
+        char = text[index]
 
-    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
-        return value[1:-1].replace('""', '"').strip()
+        if char == "'" and not in_double_quote:
+            if in_single_quote and index + 1 < len(text) and text[index + 1] == "'":
+                if depth > 0:
+                    current.append(char)
+                    current.append(text[index + 1])
+                index += 2
+                continue
+            in_single_quote = not in_single_quote
+        elif char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
 
-    return value
-
-
-def _extract_task_labels_from_sql(sql_text: str) -> list[str]:
-    labels = []
-
-    for statement in _split_sql_statements(sql_text):
-        match = re.match(
-            r"^\s*INSERT\s+INTO\s+tasks\s*\((.*?)\)\s*VALUES\s*\((.*)\)\s*$",
-            statement,
-            flags=re.IGNORECASE | re.DOTALL,
-        )
-        if not match:
+        if char == "(" and not in_single_quote and not in_double_quote:
+            if depth == 0:
+                current = []
+            else:
+                current.append(char)
+            depth += 1
+            index += 1
             continue
 
-        columns = [col.strip().strip('`"[]').lower() for col in _split_sql_csv(match.group(1))]
-        values = _split_sql_csv(match.group(2))
+        if char == ")" and not in_single_quote and not in_double_quote:
+            depth -= 1
+            if depth < 0:
+                raise ValueError("Некорректный VALUES-блок в SQL.")
+            if depth == 0:
+                rows.append("".join(current).strip())
+                current = []
+                index += 1
+                continue
 
+        if depth > 0:
+            current.append(char)
+
+        index += 1
+
+    if depth != 0:
+        raise ValueError("Некорректный VALUES-блок в SQL.")
+
+    return [row for row in rows if row]
+
+
+def _normalize_identifier(identifier: str) -> str:
+    return identifier.strip().strip('`"[]').lower()
+
+
+def _parse_sql_string_literal(value: str, field_name: str, allow_null: bool = False) -> str | None:
+    normalized = value.strip()
+    if allow_null and normalized.upper() == "NULL":
+        return None
+
+    if len(normalized) >= 2 and normalized[0] == "'" and normalized[-1] == "'":
+        return normalized[1:-1].replace("''", "'")
+
+    if len(normalized) >= 2 and normalized[0] == '"' and normalized[-1] == '"':
+        return normalized[1:-1].replace('""', '"')
+
+    raise ValueError(f"Поле {field_name} должно быть строковым литералом SQL.")
+
+
+def _parse_sql_text_value(value: str, field_name: str) -> str:
+    normalized = value.strip()
+    if re.fullmatch(r"-?\d+", normalized):
+        return normalized
+    parsed = _parse_sql_string_literal(normalized, field_name, allow_null=False)
+    if parsed is None:
+        raise ValueError(f"Поле {field_name} не может быть NULL.")
+    return parsed
+
+
+def _parse_lesson_insert(statement: str, expected_course_id: int | None) -> dict:
+    match = re.match(
+        r"^\s*INSERT\s+INTO\s+lessons\s*\((.*?)\)\s*VALUES\s*\((.*)\)\s*$",
+        statement,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        raise ValueError("Некорректный INSERT INTO lessons.")
+
+    columns = _split_sql_csv(match.group(1))
+    values = _split_sql_csv(match.group(2))
+
+    if len(columns) != len(values):
+        raise ValueError("В INSERT INTO lessons количество колонок и значений не совпадает.")
+
+    mapped_values = {}
+    for raw_column, raw_value in zip(columns, values):
+        column = _normalize_identifier(raw_column)
+        normalized_column = LESSONS_COLUMN_ALIASES.get(column, column)
+
+        if normalized_column not in {"id", "course_id", "title", "status", "open_date", "file_id"}:
+            raise ValueError(f"Недопустимая колонка lessons: {raw_column}")
+
+        if normalized_column not in mapped_values:
+            mapped_values[normalized_column] = raw_value.strip()
+
+    if expected_course_id is None:
+        if "course_id" not in mapped_values:
+            raise ValueError("В INSERT INTO lessons отсутствует course_id.")
+        try:
+            course_id = int(mapped_values["course_id"])
+        except ValueError as error:
+            raise ValueError("course_id в INSERT INTO lessons должен быть целым числом.") from error
+    else:
+        course_id = int(expected_course_id)
+
+    lesson_title = _parse_sql_text_value(mapped_values.get("title", "'Новый урок'"), "lessons.title")
+    lesson_status = _parse_sql_string_literal(mapped_values.get("status", "'open'"), "lessons.status") or "open"
+
+    return {
+        "course_id": course_id,
+        "lesson_title": lesson_title,
+        "lesson_status": lesson_status,
+        "tasks": [],
+    }
+
+
+def _parse_tasks_insert(statement: str, default_title_index: int) -> tuple[list[dict], int]:
+    match = re.match(
+        r"^\s*INSERT\s+INTO\s+tasks\s*\((.*?)\)\s*VALUES\s*(.*)\s*$",
+        statement,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        raise ValueError("Некорректный INSERT INTO tasks. Ожидается формат с VALUES.")
+
+    columns = _split_sql_csv(match.group(1))
+    row_texts = _split_sql_value_rows(match.group(2))
+
+    if not row_texts:
+        raise ValueError("В INSERT INTO tasks нет строк VALUES.")
+
+    tasks = []
+    for row_text in row_texts:
+        values = _split_sql_csv(row_text)
         if len(columns) != len(values):
-            continue
+            raise ValueError("В INSERT INTO tasks количество колонок и значений не совпадает.")
 
-        row = dict(zip(columns, values))
-        raw_label = None
-        for column in ("title", "number", "task_number", "name"):
-            if column in row:
-                raw_label = _parse_sql_literal(row[column])
-                break
+        mapped_values = {}
+        for raw_column, raw_value in zip(columns, values):
+            column = _normalize_identifier(raw_column)
+            normalized_column = TASKS_COLUMN_ALIASES.get(column, column)
 
-        if raw_label:
-            normalized = _normalize_task_label(raw_label)
-            if normalized:
-                labels.append(normalized)
+            if normalized_column not in {"id", "lesson_id", "title", "status", "deadline", "description"}:
+                raise ValueError(f"Недопустимая колонка tasks: {raw_column}")
 
-    return _deduplicate_labels(labels)
+            if normalized_column not in mapped_values:
+                mapped_values[normalized_column] = raw_value.strip()
+
+        title_value = mapped_values.get("title")
+        if title_value is None:
+            title = f"Задача {default_title_index}"
+            default_title_index += 1
+        else:
+            title = _parse_sql_text_value(title_value, "tasks.title")
+
+        status = _parse_sql_string_literal(mapped_values.get("status", "'open'"), "tasks.status") or "open"
+        description = _parse_sql_string_literal(
+            mapped_values.get("description", "NULL"),
+            "tasks.description",
+            allow_null=True,
+        )
+        if description is None or not str(description).strip():
+            raise ValueError(f"У задачи {title} отсутствует description.")
+
+        tasks.append({
+            "title": title,
+            "status": status,
+            "description": description,
+        })
+
+    return tasks, default_title_index
 
 
-def _escape_sql_string(text: str) -> str:
-    return (text or "").replace("'", "''")
+def _build_normalized_sql(payload: dict) -> str:
+    lesson_statement = (
+        "INSERT INTO lessons (course_id, title, status) VALUES "
+        f"({int(payload['course_id'])}, {_quote_sql_string(payload['lesson_title'])}, {_quote_sql_string(payload['lesson_status'])});"
+    )
 
-
-def _append_missing_tasks_to_sql(sql_text: str, missing_tasks: dict[str, str]) -> str:
-    chunks = [sql_text.strip()]
-
-    for label, task_text in missing_tasks.items():
-        safe_label = _escape_sql_string(label)
-        safe_text = _escape_sql_string(task_text.strip())
-        chunks.append(
-            "INSERT INTO tasks (lesson_id, title, status, description) VALUES "
-            f"((SELECT MAX(id) FROM lessons), '{safe_label}', 'open', '{safe_text}');"
+    task_lines = []
+    for index, task in enumerate(payload["tasks"]):
+        select_prefix = "SELECT" if index == 0 else "UNION ALL\nSELECT"
+        task_lines.append(
+            f"{select_prefix} last_insert_rowid(), "
+            f"{_quote_sql_string(task['title'])}, "
+            f"{_quote_sql_string(task.get('status') or 'open')}, "
+            f"{_quote_sql_string(task.get('description') or '')}"
         )
 
-    return "\n\n".join(chunk for chunk in chunks if chunk)
+    tasks_statement = "INSERT INTO tasks (lesson_id, title, status, description)\n" + "\n".join(task_lines) + ";"
+    return lesson_statement + "\n\n" + tasks_statement
 
 
-def _parse_task_labels_from_text(text: str) -> list[str]:
-    cleaned = _strip_markdown_fences(text)
-    labels = []
+def normalize_lesson_sql(sql_text: str, expected_course_id: int | None = None) -> tuple[str, dict]:
+    extracted_sql = _extract_sql_code(sql_text)
+    if not extracted_sql:
+        raise ValueError("Пустой SQL.")
 
-    for line in cleaned.splitlines():
-        line_clean = line.strip()
-        if not line_clean:
+    statements = _split_sql_statements(extracted_sql)
+    if not statements:
+        raise ValueError("SQL не содержит команд.")
+
+    lesson_payload = None
+    task_payloads = []
+    default_title_index = 1
+
+    for statement in statements:
+        compact = statement.strip()
+        if not compact:
             continue
-        line_clean = re.sub(r"^[\-\*\u2022\s]+", "", line_clean)
-        match = re.match(r"^(\d+\s*\*?\s*[A-Za-zА-Яа-яЁё]?\s*\*?)", line_clean)
-        if match:
-            labels.append(match.group(1))
 
-    if not labels:
-        labels = re.findall(r"(?<!\d)(\d+\s*\*?\s*[A-Za-zА-Яа-яЁё]?\s*\*?)(?!\d)", cleaned)
+        if re.match(r"^\s*INSERT\s+INTO\s+lessons\b", compact, flags=re.IGNORECASE):
+            if lesson_payload is not None:
+                raise ValueError("В SQL должно быть только одно INSERT INTO lessons.")
+            lesson_payload = _parse_lesson_insert(compact, expected_course_id)
+            continue
 
-    return _deduplicate_labels(labels)
+        if re.match(r"^\s*INSERT\s+INTO\s+tasks\b", compact, flags=re.IGNORECASE):
+            tasks, default_title_index = _parse_tasks_insert(compact, default_title_index)
+            task_payloads.extend(tasks)
+            continue
+
+        if re.match(r"^\s*(BEGIN|COMMIT|END|ROLLBACK)\b", compact, flags=re.IGNORECASE):
+            continue
+
+        raise ValueError(f"Недопустимая SQL-команда: {compact[:80]}")
+
+    if lesson_payload is None:
+        raise ValueError("В SQL нет INSERT INTO lessons.")
+    if not task_payloads:
+        raise ValueError("В SQL нет INSERT INTO tasks.")
+
+    lesson_payload["tasks"] = task_payloads
+    normalized_sql = _build_normalized_sql(lesson_payload)
+    return normalized_sql, lesson_payload
 
 
-def _build_initial_prompt(course_id: int, required_labels: list[str] | None = None) -> str:
-    required_labels = required_labels or []
-    required_block = ""
-
-    if required_labels:
-        required_block = (
-            "\nОбязательный список номеров задач (нельзя пропускать):\n"
-            + "\n".join(required_labels)
-            + "\n"
-        )
-
+def _base_prompt(course_id: int) -> str:
     return f"""
-Сгенерируй SQL-запросы для SQLite базы учебного бота.
+Ты помогаешь заполнить базу учебного бота.
 
-Контекст:
-- Нужно добавить новый урок и задачи в course_id = {course_id}.
-- Используй только таблицы lessons и tasks.
-{required_block}
+Нужно вернуть SQL для SQLite, который добавляет один новый урок в course_id = {course_id}
+и все задачи из присланного листка.
 
-Схема таблиц (важно соблюдать точные названия колонок):
-lessons:
-- id INTEGER PRIMARY KEY AUTOINCREMENT
-- course_id INTEGER NOT NULL
-- title TEXT NOT NULL
-- status TEXT NOT NULL
-- open_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+Верни только SQL, без markdown, без пояснений и без комментариев.
 
-tasks:
-- id INTEGER PRIMARY KEY AUTOINCREMENT
-- lesson_id INTEGER NOT NULL
-- title TEXT NOT NULL
-- status TEXT NOT NULL
-- deadline TIMESTAMP
-- description TEXT
+Используй только такие команды:
+1) ровно один INSERT INTO lessons
+2) один или несколько INSERT INTO tasks
+
+Ожидаемый формат:
+INSERT INTO lessons (course_id, title, status) VALUES ({course_id}, 'Название урока', 'open');
+INSERT INTO tasks (lesson_id, title, status, description) VALUES (0, '1', 'open', 'Текст задачи');
+INSERT INTO tasks (lesson_id, title, status, description) VALUES (0, '2а', 'open', 'Текст задачи');
 
 Правила:
-1) Используй только SQL.
-2) Сначала создай ОДИН новый урок в таблице lessons.
-3) Затем создай задачи в таблице tasks, связанные с этим уроком.
-4) Для lessons.status и tasks.status ставь 'open'.
-5) Вставляй задачи, у которых номер начинается с числа.
-   Примеры корректных номеров: 1, 2, 7*, 2a, 2b, 2c, 2а, 2б, 2в.
-6) Если у задачи есть подпункты с буквами, каждый подпункт нужно добавить как ОТДЕЛЬНУЮ задачу.
-   То есть 2а, 2б, 2в — это три разные задачи.
-7) Буквенные пункты без числовой части (например просто "а") не добавляй.
-8) Используй корректный id урока:
-   - либо через подзапрос с MAX(id),
-   - либо через явный id, который соответствует следующему доступному id.
-9) Для каждой задачи:
-   - title: короткий номер задачи (например, '1', '2', '3*', '2a', '2б')
-   - description: полный текст задачи
-10) Обязательно сохраняй тот же алфавит, что на листке:
-    если на листке 2а/2б (кириллица), не меняй на 2a/2b.
-11) ОБЯЗАТЕЛЬНО проверь перед ответом, что ни один номер задачи/подзадачи не пропущен.
-12) НЕ используй колонки text, number, name и любые другие, которых нет в схеме выше.
-13) Не используй DELETE, DROP, ALTER, UPDATE.
-14) Не добавляй комментарии и пояснения.
-
-Ответ верни ТОЛЬКО SQL-запросами, без markdown.
+1) Не используй UPDATE, DELETE, DROP, CREATE, ALTER и другие команды кроме INSERT INTO lessons/tasks.
+2) lesson_id в INSERT INTO tasks можно ставить любым целым числом-плейсхолдером, бот его перепишет сам.
+3) Не заполняй id вручную.
+4) Используй одинарные кавычки в SQL-строках.
+5) Если в тексте есть апостроф, экранируй его удвоением.
+6) title у задачи это номер или подпункт: 1, 2a, 2б, 7* и т.п.
+7) description у задачи это полный текст задачи.
+8) Не пропускай видимые задачи и подпункты.
+9) Не объединяй разные задачи в одну.
+10) status для урока и задач ставь 'open'.
 """.strip()
 
 
-def _build_retry_prompt(
-    course_id: int,
-    previous_sql: str,
-    admin_feedback: str,
-    required_labels: list[str] | None = None,
-) -> str:
-    required_labels = required_labels or []
-    required_block = ""
-
-    if required_labels:
-        required_block = (
-            "\nОбязательный список номеров задач (нельзя пропускать):\n"
-            + "\n".join(required_labels)
-            + "\n"
-        )
-
+def _retry_prompt(course_id: int, previous_sql: str, admin_feedback: str) -> str:
     return f"""
-Исправь SQL-запросы для SQLite базы учебного бота.
+Исправь SQL для SQLite по замечаниям администратора.
 
-Контекст:
-- course_id = {course_id}
-- Нужно создать урок и задачи из прикрепленного листка.
-{required_block}
+Нужно вернуть только SQL, без markdown, без пояснений и без комментариев.
+Новый SQL должен добавлять один урок в course_id = {course_id} и все его задачи.
 
-Схема таблиц (строго):
-lessons(id, course_id, title, status, open_date)
-tasks(id, lesson_id, title, status, deadline, description)
-
-Комментарий администратора с ошибками:
+Замечания администратора:
 {admin_feedback}
 
 Текущая версия SQL:
 {previous_sql}
 
 Требования:
-1) Верни исправленный SQL.
-2) Используй только SQL, без markdown и пояснений.
-3) Не используй DELETE, DROP, ALTER, UPDATE.
-4) Сначала INSERT в lessons, затем INSERT в tasks.
-5) Для lessons.status и tasks.status ставь 'open'.
-6) Добавляй задачи с числовым началом номера: 1, 2, 2a, 2б, 7* и т.п.
-7) Подпункты с буквами (например 2a/2b/2c или 2а/2б/2в) добавляй как отдельные задачи.
-8) Для задач используй только колонки: lesson_id, title, status, description (deadline опционально).
-9) НИКОГДА не используй колонки text, number, name.
-10) title должен быть номером задачи/подзадачи, description должен быть полным текстом.
-11) Сохраняй алфавит как в листке: латиница/кириллица не взаимозаменяемы.
-12) ОБЯЗАТЕЛЬНО проверь, что ни один номер задачи или буквенный подпункт не пропущен.
+1) Используй только INSERT INTO lessons и INSERT INTO tasks.
+2) lesson_id в INSERT INTO tasks можно ставить любым целым числом-плейсхолдером, бот его перепишет сам.
+3) Не заполняй id вручную.
+4) Используй одинарные кавычки в SQL-строках.
+5) Не пропускай видимые задачи и подпункты.
+6) Не объединяй разные задачи в одну.
+7) status для урока и задач ставь 'open'.
 """.strip()
 
 
-def _build_labels_audit_prompt(audit_mode: str) -> str:
-    if audit_mode == "bottom_up":
-        return """
-Проведи ПОВТОРНУЮ ПРОВЕРКУ листка снизу вверх и по краям.
-Особенно ищи номера со звездочкой (например 1*, 2*) и пункты,
-которые легко пропустить. Подпункты с буквами (2a/2b или 2а/2б)
-считай отдельными задачами.
-
-Верни только номера задач, по одному номеру в строке.
-Формат номера: 1, 1*, 2a, 2b, 2а, 2б.
-Никакого дополнительного текста.
-""".strip()
-
-    return """
-Проанализируй листок с задачами сверху вниз.
-Верни ВСЕ номера задач, по одному номеру в строке.
-Подпункты с буквами добавляй отдельными строками: 2a, 2b или 2а, 2б.
-Формат номера: 1, 1*, 2a, 2b, 2а, 2б.
-Никакого дополнительного текста.
-""".strip()
-
-
-def _build_missing_tasks_prompt(missing_labels: list[str]) -> str:
-    labels_block = "\n".join(missing_labels)
-    return f"""
-Найди на листке полный текст задач строго для этих номеров:
-{labels_block}
-
-Ответ верни только строками формата:
-<номер>|||<полный текст задачи>
-
-Одна задача — одна строка.
-Если текст частично нечитабелен, верни максимально полный видимый вариант.
-""".strip()
-
-
-def _parse_missing_tasks_response(text: str) -> dict[str, str]:
-    cleaned = _strip_markdown_fences(text)
-    result = {}
-
-    for line in cleaned.splitlines():
-        if "|||" not in line:
-            continue
-        label_raw, task_text = line.split("|||", 1)
-        label = _normalize_task_label(label_raw)
-        task_text = task_text.strip()
-        if label and task_text:
-            result[label] = task_text
-
-    return result
-
-
-def _build_lesson_content(client: openai.OpenAI, lesson_file_path: str):
-    extension = Path(lesson_file_path).suffix.lower()
-
-    if extension in IMAGE_EXTENSIONS:
-        return [{"type": "input_image", "image_url": _load_image_data_url(lesson_file_path)}], None
-
-    if extension == PDF_EXTENSION:
-        with open(lesson_file_path, "rb") as lesson_file:
-            uploaded_file = client.files.create(file=lesson_file, purpose="user_data")
-        return [{"type": "input_file", "file_id": uploaded_file.id}], uploaded_file.id
-
-    raise ValueError("Поддерживаются только фото (jpg/jpeg/png/webp) и PDF.")
-
-
-def _request_sheet_text(lesson_file_path: str, prompt: str) -> str:
+def _request_lesson_sql(lesson_file_path: str, prompt: str, model_key: str, course_id: int) -> tuple[str, dict]:
     config = load_config()
-    api_key = config["openai-api-key"]
-    audit_model = _pick_model(config, "openai-model-audit")
+    api_key = str(config["openai-api-key"]).strip()
+    model = _pick_model(config, model_key)
 
     if not os.path.exists(lesson_file_path):
         raise FileNotFoundError(f"Не найден файл с задачами: {lesson_file_path}")
 
-    client = openai.OpenAI(api_key=api_key)
-    uploaded_ids = []
-
+    uploaded_file_id = None
     try:
-        lesson_content, lesson_file_id = _build_lesson_content(client, lesson_file_path)
-        if lesson_file_id:
-            uploaded_ids.append(lesson_file_id)
-
-        response = client.responses.create(
-            model=audit_model,
-            input=[
+        lesson_content, uploaded_file_id = _build_lesson_content(api_key, lesson_file_path)
+        payload = {
+            "model": model,
+            "input": [
                 {
                     "role": "user",
                     "content": [{"type": "input_text", "text": prompt}, *lesson_content],
                 }
             ],
+        }
+
+        response = requests.post(
+            f"{OPENAI_API_BASE}/responses",
+            headers={
+                **_openai_headers(api_key),
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=REQUEST_TIMEOUT_SECONDS,
         )
-
-        text = _strip_markdown_fences(response.output_text)
-        if not text:
-            raise RuntimeError("GPT вернул пустой ответ при аудите листка.")
-        return text.strip()
-    finally:
-        for file_id in uploaded_ids:
-            try:
-                client.files.delete(file_id)
-            except Exception:
-                pass
-
-
-def _collect_required_task_labels(lesson_file_path: str) -> list[str]:
-    pass1 = _request_sheet_text(lesson_file_path, _build_labels_audit_prompt("top_down"))
-    pass2 = _request_sheet_text(lesson_file_path, _build_labels_audit_prompt("bottom_up"))
-    labels = _parse_task_labels_from_text(pass1) + _parse_task_labels_from_text(pass2)
-    return _deduplicate_labels(labels)
-
-
-def _extract_missing_tasks_text(lesson_file_path: str, missing_labels: list[str]) -> dict[str, str]:
-    if not missing_labels:
-        return {}
-
-    response_text = _request_sheet_text(lesson_file_path, _build_missing_tasks_prompt(missing_labels))
-    parsed = _parse_missing_tasks_response(response_text)
-
-    result = {}
-    for label in missing_labels:
-        result[label] = parsed.get(label, MISSING_TASK_FALLBACK_TEXT)
-
-    return result
-
-
-def _find_missing_labels(required_labels: list[str], sql_text: str) -> list[str]:
-    required = _deduplicate_labels(required_labels)
-    if not required:
-        return []
-
-    in_sql = set(_extract_task_labels_from_sql(sql_text))
-    return [label for label in required if label not in in_sql]
-
-
-def _request_sql(lesson_file_path: str, prompt: str) -> str:
-    config = load_config()
-    db_path = config.get("db-name", "users.db")
-    api_key = config["openai-api-key"]
-    sql_model = _pick_model(config, "openai-model-sql")
-
-    if not os.path.exists(db_path):
-        raise FileNotFoundError(f"Не найдена база данных: {db_path}")
-    if not os.path.exists(lesson_file_path):
-        raise FileNotFoundError(f"Не найден файл с задачами: {lesson_file_path}")
-
-    client = openai.OpenAI(api_key=api_key)
-    zip_path = _zip_db(db_path)
-    uploaded_ids = []
-
-    try:
-        with open(zip_path, "rb") as db_archive:
-            db_file = client.files.create(file=db_archive, purpose="user_data")
-        uploaded_ids.append(db_file.id)
-
-        lesson_content, lesson_file_id = _build_lesson_content(client, lesson_file_path)
-        if lesson_file_id:
-            uploaded_ids.append(lesson_file_id)
-
-        response = client.responses.create(
-            model=sql_model,
-            tools=[
-                {
-                    "type": "code_interpreter",
-                    "container": {
-                        "type": "auto",
-                        "memory_limit": "1g",
-                        "file_ids": [db_file.id],
-                    },
-                }
-            ],
-            tool_choice="auto",
-            instructions=(
-                "Анализируй SQLite через code interpreter только по приложенному архиву БД. "
-                "Прикрепленный листок (фото или PDF) анализируй самим модельным зрением/чтением, "
-                "без попытки читать его через Python."
-            ),
-            input=[
-                {
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": prompt}, *lesson_content],
-                }
-            ],
-        )
-
-        sql_text = _strip_markdown_fences(response.output_text)
-        if not sql_text:
-            raise RuntimeError("GPT вернул пустой ответ.")
-
-        return sql_text.strip()
-    finally:
-        for file_id in uploaded_ids:
-            try:
-                client.files.delete(file_id)
-            except Exception:
-                pass
-
         try:
-            os.remove(zip_path)
-        except OSError:
-            pass
+            response.raise_for_status()
+        except requests.HTTPError as error:
+            raise RuntimeError(f"OpenAI вернул ошибку: {response.text}") from error
+
+        response_text = _extract_response_text(response.json())
+        if not response_text:
+            raise RuntimeError("OpenAI вернул пустой ответ.")
+
+        return normalize_lesson_sql(response_text, expected_course_id=course_id)
+    finally:
+        if uploaded_file_id:
+            _delete_uploaded_file(api_key, uploaded_file_id)
 
 
-def _ensure_sql_covers_required_labels(
-    lesson_file_path: str,
-    course_id: int,
-    sql_text: str,
-    required_labels: list[str],
-    base_feedback: str = "",
-) -> str:
-    missing_labels = _find_missing_labels(required_labels, sql_text)
-    retry_number = 0
-
-    while missing_labels and retry_number < MAX_SQL_RETRY_FOR_MISSING:
-        retry_number += 1
-        feedback_parts = []
-        if base_feedback.strip():
-            feedback_parts.append(base_feedback.strip())
-        feedback_parts.append(
-            "В SQL отсутствуют задачи с номерами: "
-            + ", ".join(missing_labels)
-            + ". Добавь их обязательно и не удаляй уже существующие задачи."
-        )
-
-        sql_text = _request_sql(
-            lesson_file_path=lesson_file_path,
-            prompt=_build_retry_prompt(
-                course_id=course_id,
-                previous_sql=sql_text,
-                admin_feedback="\n\n".join(feedback_parts),
-                required_labels=required_labels,
-            ),
-        )
-        missing_labels = _find_missing_labels(required_labels, sql_text)
-
-    if missing_labels:
-        missing_tasks = _extract_missing_tasks_text(lesson_file_path, missing_labels)
-        sql_text = _append_missing_tasks_to_sql(sql_text, missing_tasks)
-
-    return sql_text
-
-
-def generate_lesson_sql(lesson_file_path: str, course_id: int) -> str:
-    required_labels = _collect_required_task_labels(lesson_file_path)
-
-    sql_text = _request_sql(
+def generate_lesson_sql(lesson_file_path: str, course_id: int) -> tuple[str, dict]:
+    return _request_lesson_sql(
         lesson_file_path=lesson_file_path,
-        prompt=_build_initial_prompt(course_id=course_id, required_labels=required_labels),
-    )
-
-    return _ensure_sql_covers_required_labels(
-        lesson_file_path=lesson_file_path,
+        prompt=_base_prompt(course_id),
+        model_key="openai-model-sql",
         course_id=course_id,
-        sql_text=sql_text,
-        required_labels=required_labels,
     )
 
 
-def fix_lesson_sql(lesson_file_path: str, course_id: int, previous_sql: str, admin_feedback: str) -> str:
-    required_labels = _collect_required_task_labels(lesson_file_path)
-
-    sql_text = _request_sql(
+def fix_lesson_sql(lesson_file_path: str, course_id: int, previous_sql: str, admin_feedback: str) -> tuple[str, dict]:
+    return _request_lesson_sql(
         lesson_file_path=lesson_file_path,
-        prompt=_build_retry_prompt(
-            course_id=course_id,
-            previous_sql=previous_sql,
-            admin_feedback=admin_feedback,
-            required_labels=required_labels,
-        ),
-    )
-
-    return _ensure_sql_covers_required_labels(
-        lesson_file_path=lesson_file_path,
+        prompt=_retry_prompt(course_id, previous_sql, admin_feedback),
+        model_key="openai-model-sql",
         course_id=course_id,
-        sql_text=sql_text,
-        required_labels=required_labels,
-        base_feedback=admin_feedback,
     )
 
 
@@ -668,7 +598,7 @@ def main() -> None:
     config = load_config()
     lesson_file_path = config.get("image-path", "photo_2026-02-10_12-18-31.jpg")
     course_id = int(config.get("course-id", 1))
-    sql_text = generate_lesson_sql(lesson_file_path=lesson_file_path, course_id=course_id)
+    sql_text, _ = generate_lesson_sql(lesson_file_path=lesson_file_path, course_id=course_id)
     print(sql_text)
 
 
