@@ -1,0 +1,8 @@
+services:
+  bot:
+    build:
+      context: .
+    container_name: matprak_bot
+    restart: unless-stopped
+    volumes:
+      - .:/app

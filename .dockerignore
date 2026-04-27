@@ -1,0 +1,11 @@
+.git/
+__pycache__/
+venv/
+*.pyc
+*.pyo
+*.db
+config.json
+service_account.json
+setup.json
+files/
+logs/
