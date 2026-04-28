@@ -3000,16 +3000,10 @@ VPN_STATS_UNITS = {
 VPN_STATS_SERVERS = [
     {
         "name": "🇩🇪 Germany VPN",
-        "domain": "localhost",
-        "metrics_url": "http://localhost:9090/metrics",
-        "link": "https://localhost",
-    },
-    {
-        "name": "🇷🇺 Moscow VPN",
-        "domain": "212.113.98.145",
-        "metrics_url": "http://212.113.98.145:9100/metrics",
-        "link": "https://212.113.98.145",
-    },
+        "domain": "195.62.49.206",
+        "metrics_url": "http://195.62.49.206:9090/metrics",
+        "link": "http://195.62.49.206:9090",
+    }
 ]
 
 
